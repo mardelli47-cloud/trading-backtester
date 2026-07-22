@@ -199,3 +199,71 @@ if run:
         st.exception(exc)
 else:
     st.info("Parameter links einstellen und den Backtest starten.")
+
+st.divider()
+st.header("Echtzeit-Dashboard")
+st.error("PAPER TRADING – KEIN ECHTGELD")
+st.caption("Live-Trading ist im Code deaktiviert. Signale beruhen ausschließlich auf abgeschlossenen Kursbalken.")
+with st.expander("Watchlist, Signale und Paper-Trading", expanded=False):
+    from decimal import Decimal
+    from backtester.broker import AlpacaPaperBroker
+    from backtester.execution import PaperOrderService
+    from backtester.risk import RiskManager, RiskSettings
+
+    watchlist = st.text_input("Watchlist (kommagetrennt)", "AAPL,MSFT").upper()
+    mode = st.radio("Modus", ["Analyse בלבד", "Paper Trading"], horizontal=True)
+    st.caption("Paper Orders erfordern zusätzlich die ausdrückliche Aktivierung unten.")
+    paper_confirmed = st.checkbox("Ich aktiviere ausschließlich Paper Trading", value=False)
+    kill_switch = st.checkbox("Kill Switch: neue Orders sofort stoppen", value=True)
+    risk_columns = st.columns(3)
+    max_risk = risk_columns[0].number_input("Max. Risiko je Trade (%)", 0.1, 10.0, 1.0, 0.1)
+    max_qty = risk_columns[1].number_input("Max. Positionsgröße", 1, 100000, 100, 1)
+    max_loss = risk_columns[2].number_input("Max. Tagesverlust (%)", 0.1, 50.0, 3.0, 0.1)
+    try:
+        secrets = st.secrets
+        api_key = secrets.get("ALPACA_API_KEY", None)
+        secret_key = secrets.get("ALPACA_SECRET_KEY", None)
+        paper_value = str(secrets.get("ALPACA_PAPER", "true")).lower()
+        if paper_value != "true":
+            raise ValueError("ALPACA_PAPER muss 'true' sein; Live-Modus ist gesperrt.")
+        broker = AlpacaPaperBroker(api_key, secret_key, paper=True)
+        account = broker.get_account()
+        st.success("Verbindungsstatus: Paper-API verbunden")
+        cards = st.columns(2)
+        cards[0].metric("Kontostand", f"${account.equity:,.2f}")
+        cards[1].metric("Kaufkraft", f"${account.buying_power:,.2f}")
+        positions = broker.list_positions()
+        orders = broker.list_orders(True)
+        st.subheader("Signale")
+        st.dataframe(pd.DataFrame([{
+            "Symbol": symbol.strip(), "Aktueller Kurs": "Warte auf abgeschlossenen WebSocket-Balken",
+            "Signal": "neutral", "Signalzeit": "–", "Strategie": strategy_name,
+            "Stärke": "–", "Position": next((str(p.qty) for p in positions if p.symbol == symbol.strip()), "0"),
+            "Unrealisierter G/V": next((str(p.unrealized_pl) for p in positions if p.symbol == symbol.strip()), "0"),
+        } for symbol in watchlist.split(",") if symbol.strip()]), hide_index=True, use_container_width=True)
+        st.subheader("Offene Positionen")
+        st.dataframe(pd.DataFrame([p.__dict__ for p in positions]), use_container_width=True, hide_index=True)
+        st.subheader("Offene Orders / Trade-Historie")
+        st.dataframe(pd.DataFrame([o.__dict__ for o in orders]), use_container_width=True, hide_index=True)
+        if mode == "Paper Trading" and paper_confirmed:
+            service = PaperOrderService(broker, RiskManager(RiskSettings(max_risk_per_trade_pct=Decimal(str(max_risk)), max_position_qty=Decimal(max_qty), max_daily_loss_pct=Decimal(str(max_loss))), account.equity, kill_switch), paper_enabled=True)
+            st.info("Ordermaske ist nur während regulärer Handelszeiten aktiv; jede Order wird vor Übermittlung validiert.")
+            with st.form("paper_order"):
+                order_symbol = st.selectbox("Symbol für Paper-Order", [x.strip() for x in watchlist.split(",") if x.strip()] or ["AAPL"])
+                order_side = st.selectbox("Seite", ["buy", "sell"])
+                order_type = st.selectbox("Ordertyp", ["market", "limit"])
+                order_qty = st.number_input("Stückzahl", min_value=1, value=1, step=1)
+                limit_price = st.number_input("Limitpreis", min_value=0.01, value=1.00) if order_type == "limit" else None
+                send_order = st.form_submit_button("Paper-Order validieren und übermitteln")
+            if send_order:
+                try:
+                    from backtester.broker import OrderRequest
+                    order = service.submit(OrderRequest(order_symbol, order_side, Decimal(order_qty), order_type, Decimal(str(limit_price)) if limit_price else None), Decimal(str(limit_price or 1)))
+                    st.success(f"Paper-Order {order.status.value}: {order.client_order_id}")
+                except Exception as order_exc:
+                    st.error(f"Paper-Order nicht übermittelt: {order_exc}")
+        else:
+            st.info("Analysemodus aktiv: Es werden keine Orders übermittelt.")
+    except Exception as exc:
+        st.warning(f"Verbindungsstatus: nicht verbunden – {exc}")
+        st.caption("Keine Schlüssel werden angezeigt oder protokolliert. Setze sie in Streamlit Secrets oder Umgebungsvariablen.")

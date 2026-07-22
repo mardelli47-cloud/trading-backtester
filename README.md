@@ -80,3 +80,40 @@ pytest -q
 5. Separate Long-/Short-Kennzahlen.
 6. Paper-Trading-Adapter erst nach bestandenen Qualitätsprüfungen.
 7. Live-Trading ausschließlich mit harten Risiko-Limits und manueller Freigabe.
+
+## Echtzeit-Analyse und Alpaca Paper Trading
+
+> **PAPER TRADING – KEIN ECHTGELD.** Das Modul unterstützt ausschließlich den
+> Alpaca-Paper-Endpunkt. Der Live-Endpunkt kann nicht aktiviert werden. Paper
+> Trading simuliert Ausführungen und ist keine Gewinngarantie.
+
+1. Einen kostenlosen [Alpaca Paper Account](https://alpaca.markets/) erstellen und
+   dort Paper-API-Schlüssel erzeugen.
+2. Die Vorlage kopieren und nur lokal befüllen:
+
+```bash
+mkdir -p .streamlit
+cp .streamlit/secrets.toml.example .streamlit/secrets.toml
+```
+
+```toml
+ALPACA_API_KEY = "..."
+ALPACA_SECRET_KEY = "..."
+ALPACA_PAPER = "true"
+```
+
+Alternativ können dieselben Werte als Umgebungsvariablen gesetzt werden. Die echte
+`secrets.toml` ist per `.gitignore` ausgeschlossen: Schlüssel niemals committen,
+loggend ausgeben oder mit anderen teilen.
+
+Starten Sie das Dashboard mit `streamlit run app.py`. Im Bereich **Echtzeit-Dashboard**
+ist der Standard **Analyse בלבד**; Paper Orders benötigen eine ausdrückliche zweite
+Bestätigung. Die Oberfläche zeigt Paper-Konto, Positionen, offene Orders und den
+Verbindungsstatus. WebSocket-Marktdaten werden bei Abbruch mit begrenztem Backoff
+wieder verbunden. Signale für Momentum, VWAP Mean Reversion und Opening Range
+Breakout werden nur aus abgeschlossenen Balken berechnet.
+
+Vor jeder Paper-Order erzwingen Idempotenzschutz, reguläre US-Handelszeiten,
+vorhandene offene Orders/Positionen sowie Positions-, Kaufkraft-, Tagesverlust-,
+Cooldown- und Kill-Switch-Prüfungen eine fail-closed Validierung. Netzwerkfehler
+werden **nicht** automatisch mit einer weiteren Order beantwortet.

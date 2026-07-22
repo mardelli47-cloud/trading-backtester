@@ -89,22 +89,9 @@ pytest -q
 
 1. Einen kostenlosen [Alpaca Paper Account](https://alpaca.markets/) erstellen und
    dort Paper-API-Schlüssel erzeugen.
-2. Die Vorlage kopieren und nur lokal befüllen:
-
-```bash
-mkdir -p .streamlit
-cp .streamlit/secrets.toml.example .streamlit/secrets.toml
-```
-
-```toml
-ALPACA_API_KEY = "..."
-ALPACA_SECRET_KEY = "..."
-ALPACA_PAPER = "true"
-```
-
-Alternativ können dieselben Werte als Umgebungsvariablen gesetzt werden. Die echte
-`secrets.toml` ist per `.gitignore` ausgeschlossen: Schlüssel niemals committen,
-loggend ausgeben oder mit anderen teilen.
+2. Die Schlüssel ausschließlich als `ALPACA_API_KEY`, `ALPACA_SECRET_KEY` und
+   `ALPACA_PAPER=true` in der Umgebung bzw. im Secret Store setzen. Sie dürfen
+   weder in `secrets.toml` noch im Quellcode stehen, committed oder geloggt werden.
 
 Starten Sie das Dashboard mit `streamlit run app.py`. Im Bereich **Echtzeit-Dashboard**
 ist der Standard **Analyse בלבד**; Paper Orders benötigen eine ausdrückliche zweite
@@ -117,3 +104,28 @@ Vor jeder Paper-Order erzwingen Idempotenzschutz, reguläre US-Handelszeiten,
 vorhandene offene Orders/Positionen sowie Positions-, Kaufkraft-, Tagesverlust-,
 Cooldown- und Kill-Switch-Prüfungen eine fail-closed Validierung. Netzwerkfehler
 werden **nicht** automatisch mit einer weiteren Order beantwortet.
+
+## Sicherer Telegram-Paper-Trading-Worker
+
+> **PAPER TRADING – KEIN ECHTGELD.** Der Telegram-Worker kann ausschließlich den
+> Alpaca-Paper-Endpunkt ansprechen. Er ist standardmäßig ein Analyse- und
+> Benachrichtigungskanal; jede Order benötigt zwei getrennte Inline-Bestätigungen
+> innerhalb von 60 Sekunden. Der Kill Switch sperrt neue Orders sofort.
+
+1. `cp .env.example .env` und **nur lokal bzw. im Secret Store** befüllen.
+   Alle Werte werden ausschließlich aus Umgebungsvariablen gelesen; weder
+   Streamlit-Secrets noch Quellcode enthalten Schlüssel.
+2. `TELEGRAM_ALLOWED_USER_IDS` als kommagetrennte numerische Whitelist setzen und
+   `ALPACA_PAPER=true` beibehalten. Alles andere wird fail-closed abgewiesen.
+3. Lokal (nur Entwicklung): `python telegram_worker.py --local-polling`.
+4. Dauerhaft: einen Python-Worker bei Render oder Railway betreiben, die
+   Umgebungsvariablen in dessen Secret Store hinterlegen und `TELEGRAM_WEBHOOK_URL`
+   auf die öffentliche HTTPS-URL setzen. Startbefehl: `python telegram_worker.py`.
+   Streamlit Community Cloud ist hierfür ungeeignet, weil sie keinen dauerhaft
+   laufenden Worker garantiert.
+
+Unterstützt werden `/start`, `/help`, `/status`, `/signals`, `/positions`,
+`/orders`, `/account`, `/risk`, `/pause`, `/resume`, `/kill` und `/watchlist`.
+Unbekannte Nutzer bekommen weder Konto- noch Orderdaten. Rohfehler und Secrets
+werden nie an Telegram übertragen; Netzwerkfehler führen nie zu einer
+Bestellwiederholung.

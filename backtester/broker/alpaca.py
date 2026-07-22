@@ -8,7 +8,7 @@ class AlpacaPaperBroker(Broker):
         if not paper:
             raise ValueError("Live-Trading ist absichtlich deaktiviert; nur Paper Trading wird unterstützt.")
         self.api_key=api_key or os.getenv("ALPACA_API_KEY", ""); self.secret_key=secret_key or os.getenv("ALPACA_SECRET_KEY", "")
-        if not self.api_key or not self.secret_key: raise ValueError("Alpaca API-Schlüssel fehlen. Nutze Streamlit Secrets oder Umgebungsvariablen.")
+        if not self.api_key or not self.secret_key: raise ValueError("Alpaca API-Schlüssel fehlen. Setze ALPACA_API_KEY und ALPACA_SECRET_KEY als Umgebungsvariablen.")
         try:
             from alpaca.trading.client import TradingClient
         except ImportError as exc: raise RuntimeError("alpaca-py ist nicht installiert.") from exc

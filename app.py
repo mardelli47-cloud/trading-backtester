@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import os
 
 import pandas as pd
 import plotly.graph_objects as go
@@ -220,10 +221,9 @@ with st.expander("Watchlist, Signale und Paper-Trading", expanded=False):
     max_qty = risk_columns[1].number_input("Max. Positionsgröße", 1, 100000, 100, 1)
     max_loss = risk_columns[2].number_input("Max. Tagesverlust (%)", 0.1, 50.0, 3.0, 0.1)
     try:
-        secrets = st.secrets
-        api_key = secrets.get("ALPACA_API_KEY", None)
-        secret_key = secrets.get("ALPACA_SECRET_KEY", None)
-        paper_value = str(secrets.get("ALPACA_PAPER", "true")).lower()
+        api_key = os.getenv("ALPACA_API_KEY")
+        secret_key = os.getenv("ALPACA_SECRET_KEY")
+        paper_value = os.getenv("ALPACA_PAPER", "true").lower()
         if paper_value != "true":
             raise ValueError("ALPACA_PAPER muss 'true' sein; Live-Modus ist gesperrt.")
         broker = AlpacaPaperBroker(api_key, secret_key, paper=True)
@@ -266,4 +266,4 @@ with st.expander("Watchlist, Signale und Paper-Trading", expanded=False):
             st.info("Analysemodus aktiv: Es werden keine Orders übermittelt.")
     except Exception as exc:
         st.warning(f"Verbindungsstatus: nicht verbunden – {exc}")
-        st.caption("Keine Schlüssel werden angezeigt oder protokolliert. Setze sie in Streamlit Secrets oder Umgebungsvariablen.")
+        st.caption("Keine Schlüssel werden angezeigt oder protokolliert. Setze sie ausschließlich als Umgebungsvariablen.")

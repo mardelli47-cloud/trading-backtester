@@ -6,3 +6,5 @@ yfinance>=0.2
 pytest>=8.0
 
 alpaca-py>=0.30
+
+python-telegram-bot>=21.0

@@ -8,3 +8,6 @@ venv/
 outputs/
 
 .streamlit/secrets.toml
+# Telegram webhook / Paper-trading secrets
+.env.*
+!.env.example

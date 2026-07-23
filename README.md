@@ -174,6 +174,32 @@ Unbekannte Nutzer bekommen weder Konto- noch Orderdaten. Rohfehler und Secrets
 werden nie an Telegram übertragen; Netzwerkfehler führen nie zu einer
 Bestellwiederholung.
 
+### Telegram Trading-App – Version 1
+
+Nach `/start` oder `/menu` bleibt dieses Hauptmenü sichtbar:
+
+```text
+📊 Analyse | 🔎 Scanner       ⭐ Watchlist | 🌅 Morning
+💼 Konto   | 📈 Positionen    🧾 Orders    | ⚙️ Risiko
+🤖 Autopilot | 📔 Journal     📅 Termine   | ⚙️ Einstellungen
+🔄 Aktualisieren | ❓ Hilfe
+```
+
+Alle bisherigen Slash-Befehle bleiben verfügbar; ergänzt wurden `/menu`,
+`/daily`, `/midday`, `/scan`, `/plan SYMBOL`, `/upcoming`, `/journal`,
+`/compact` und `/detailed`. Eine Nachricht mit einem einzelnen, validen Symbol
+wie `AAPL` startet eine Analyse. Analyse-, Konto-, Watchlist-, Scanner- und
+Autopilot-Ausgaben enthalten kontextbezogene Inline-Buttons. Eingaben über
+Buttons (Analyse und Watchlist) laufen über zeitlich begrenzte Dialoge.
+
+Die Watchlist und die Ansichtsoption werden über eine Storage-Abstraktion
+gespeichert: lokal SQLite (`telegram_state.sqlite3`), bei gesetztem
+`DATABASE_URL` PostgreSQL. Für Render ist eine persistente PostgreSQL-Datenbank
+erforderlich; ohne diese ist lokaler Dateispeicher nach einem Neustart nicht
+garantiert. Markt-, Earnings- und Wirtschaftstermine werden nur mit einer
+konfigurierten Datenquelle dargestellt. Fehlt sie, meldet der Bot dies klar und
+erfindet weder Kurse, Scores, Nachrichten noch Termine.
+
 `/account`, `/positions`, `/orders` und `/risk` geben ausschließlich die
 jeweiligen Daten des Paper-Brokers bzw. die aktiven Risikolimits aus. `/signals`
 zeigt nur Signale aus abgeschlossenen Balken an. Mit `/watchlist AAPL,MSFT` wird

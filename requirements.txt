@@ -9,3 +9,5 @@ alpaca-py>=0.30
 
 # `run_webhook` requires PTB's optional webhook server dependencies.
 python-telegram-bot[webhooks]>=21.0
+# Optional PostgreSQL persistence when DATABASE_URL is configured.
+psycopg[binary]>=3.1

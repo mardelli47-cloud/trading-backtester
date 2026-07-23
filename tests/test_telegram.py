@@ -1,11 +1,12 @@
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
+import logging
 import pytest
 from backtester.broker import MockBroker, OrderRequest
 from backtester.execution import PaperOrderService
 from backtester.risk import RiskManager, RiskSettings
 from backtester.telegram import OrderConfirmations, TelegramSettings
-from backtester.telegram.bot import TelegramPaperController
+from backtester.telegram.bot import TelegramPaperController, run_worker
 
 NOW=datetime(2026,1,5,15,0,tzinfo=timezone.utc)
 def controller(kill=False):
@@ -36,6 +37,25 @@ def test_missing_alpaca_keys_fails_before_network(monkeypatch):
     from backtester.broker import AlpacaPaperBroker
     monkeypatch.delenv("ALPACA_API_KEY",raising=False); monkeypatch.delenv("ALPACA_SECRET_KEY",raising=False)
     with pytest.raises(ValueError,match="Schlüssel"): AlpacaPaperBroker()
+def test_alpaca_header_validation_identifies_only_source_environment_variable(monkeypatch, caplog):
+    from backtester.broker import AlpacaPaperBroker
+    caplog.set_level(logging.INFO)
+    monkeypatch.setenv("ALPACA_API_KEY", "valid-key")
+    monkeypatch.setenv("ALPACA_SECRET_KEY", "not-a-secret-ä")
+    with pytest.raises(ValueError, match="ALPACA_SECRET_KEY") as exc_info:
+        AlpacaPaperBroker()
+    assert "not-a-secret" not in str(exc_info.value)
+    assert "APCA-API-KEY-ID" in caplog.text
+    assert "APCA-API-SECRET-KEY" in caplog.text
+    assert "not-a-secret" not in caplog.text
+def test_webhook_header_validation_identifies_only_source_environment_variable(monkeypatch, caplog):
+    caplog.set_level(logging.INFO)
+    monkeypatch.setattr("backtester.telegram.bot.build_application", lambda *_: pytest.fail("application must not be created"))
+    with pytest.raises(ValueError, match="TELEGRAM_WEBHOOK_SECRET") as exc_info:
+        run_worker(controller()[0], "token", "https://example.test", "secret-ä")
+    assert "secret-" not in str(exc_info.value)
+    assert "X-Telegram-Bot-Api-Secret-Token" in caplog.text
+    assert "secret-" not in caplog.text
 def test_network_error_is_not_retried():
     c,b=controller(); b.submit_order=lambda _: (_ for _ in ()).throw(OSError("offline"))
     token=c.propose(7,request(),Decimal("100")); c.confirm(7,token)

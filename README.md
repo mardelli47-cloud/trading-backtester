@@ -124,6 +124,13 @@ werden **nicht** automatisch mit einer weiteren Order beantwortet.
    Streamlit Community Cloud ist hierfür ungeeignet, weil sie keinen dauerhaft
    laufenden Worker garantiert.
 
+Beim Start prüft der Worker die Werte, die als HTTP-Header verwendet werden,
+bevor er einen Alpaca-Client oder Telegram-Webhook erstellt. Dabei werden nur
+die Headernamen geloggt: `APCA-API-KEY-ID`, `APCA-API-SECRET-KEY` und (falls
+gesetzt) `X-Telegram-Bot-Api-Secret-Token`. Nicht-ASCII-Zeichen werden vor dem
+Netzwerkzugriff mit dem Namen der verantwortlichen Umgebungsvariable abgewiesen;
+die Werte selbst erscheinen nie in Logs oder Fehlermeldungen.
+
 Unterstützt werden `/start`, `/help`, `/status`, `/signals`, `/positions`,
 `/orders`, `/account`, `/risk`, `/pause`, `/resume`, `/kill` und `/watchlist`.
 Unbekannte Nutzer bekommen weder Konto- noch Orderdaten. Rohfehler und Secrets

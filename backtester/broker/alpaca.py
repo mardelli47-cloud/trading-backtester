@@ -2,6 +2,7 @@
 from __future__ import annotations
 import os
 from decimal import Decimal
+from backtester.http_headers import validate_header_values
 from .base import Account, Broker, Order, OrderRequest, OrderStatus, Position
 class AlpacaPaperBroker(Broker):
     def __init__(self, api_key: str|None=None, secret_key: str|None=None, paper: bool=True):
@@ -9,6 +10,10 @@ class AlpacaPaperBroker(Broker):
             raise ValueError("Live-Trading ist absichtlich deaktiviert; nur Paper Trading wird unterstützt.")
         self.api_key=api_key or os.getenv("ALPACA_API_KEY", ""); self.secret_key=secret_key or os.getenv("ALPACA_SECRET_KEY", "")
         if not self.api_key or not self.secret_key: raise ValueError("Alpaca API-Schlüssel fehlen. Setze ALPACA_API_KEY und ALPACA_SECRET_KEY als Umgebungsvariablen.")
+        validate_header_values({
+            "APCA-API-KEY-ID": (self.api_key, "ALPACA_API_KEY"),
+            "APCA-API-SECRET-KEY": (self.secret_key, "ALPACA_SECRET_KEY"),
+        })
         try:
             from alpaca.trading.client import TradingClient
         except ImportError as exc: raise RuntimeError("alpaca-py ist nicht installiert.") from exc

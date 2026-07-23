@@ -10,9 +10,10 @@ from backtester.telegram import OrderConfirmations, TelegramSettings
 from backtester.telegram.bot import COMMANDS, TelegramPaperController, build_application, run_worker
 
 NOW=datetime(2026,1,5,15,0,tzinfo=timezone.utc)
-def controller(kill=False):
+def controller(kill=False, market_open=True, now=NOW):
     broker=MockBroker(); service=PaperOrderService(broker, RiskManager(RiskSettings(),broker.get_account().equity,kill),True)
-    return TelegramPaperController(service,frozenset({7})),broker
+    service.market_is_open = lambda checked_at: market_open
+    return TelegramPaperController(service,frozenset({7}),clock=lambda: now),broker
 def request(): return OrderRequest("AAPL","buy",Decimal("1"),client_order_id="telegram-test")
 def test_unauthorized_user_has_no_access():
     c,_=controller()
@@ -73,6 +74,13 @@ def test_network_error_is_not_retried():
     token=c.propose(7,request(),Decimal("100")); c.confirm(7,token)
     with pytest.raises(RuntimeError,match="keine automatische Wiederholung"): c.confirm(7,token)
     assert c.confirm(7,token) is None
+
+def test_confirmation_uses_the_injected_deterministic_clock():
+    c,_=controller(now=NOW)
+    submitted_at=[]
+    c.service.market_is_open=lambda checked_at: submitted_at.append(checked_at) or True
+    token=c.propose(7,request(),Decimal("100")); c.confirm(7,token); c.confirm(7,token)
+    assert submitted_at == [NOW]
 
 def test_read_only_commands_return_their_respective_paper_data():
     c, _ = controller()

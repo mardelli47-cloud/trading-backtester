@@ -1,6 +1,7 @@
 """Webhook-first Telegram control plane. It cannot create live Alpaca orders."""
 from __future__ import annotations
 import os
+import re
 from decimal import Decimal
 from backtester.broker.base import OrderRequest
 from backtester.execution import PaperOrderService
@@ -11,10 +12,12 @@ from .formatting import safe_error
 
 COMMANDS = ("start", "help", "status", "signals", "positions", "orders", "account", "risk", "pause", "resume", "kill", "watchlist")
 HELP = "Verfügbar: " + ", ".join("/" + c for c in COMMANDS) + "\n⚠️ PAPER TRADING – KEIN ECHTGELD"
+_SYMBOL = re.compile(r"^[A-Z][A-Z0-9.\-]{0,14}$")
 
 class TelegramPaperController:
-    def __init__(self, service: PaperOrderService, allowed_ids: frozenset[int]):
+    def __init__(self, service: PaperOrderService, allowed_ids: frozenset[int], watchlist: tuple[str, ...] = ()):
         self.service=service; self.access=AccessControl(allowed_ids); self.confirmations=OrderConfirmations(); self._prices: dict[str, Decimal] = {}; self.paused=False
+        self.watchlist = self._validate_watchlist(watchlist)
     def authorize(self, user_id: int) -> bool: return self.access.allowed_now(user_id)
     def kill(self) -> None: self.service.risk.kill_switch=True
     def pause(self) -> None: self.paused=True
@@ -32,6 +35,55 @@ class TelegramPaperController:
         price = self._prices.pop(token, None)
         if price is None: raise ValueError("Bestätigung abgelaufen.")
         return self.service.submit(request, price)
+    @staticmethod
+    def _validate_watchlist(symbols: tuple[str, ...] | list[str]) -> tuple[str, ...]:
+        cleaned = tuple(dict.fromkeys(symbol.strip().upper() for symbol in symbols if symbol.strip()))
+        if any(not _SYMBOL.fullmatch(symbol) for symbol in cleaned):
+            raise ValueError("Watchlist enthält ein ungültiges Symbol.")
+        return cleaned
+    def command_message(self, command: str, args: tuple[str, ...] = ()) -> str:
+        """Return the command-specific, secret-free status message.
+
+        Data is read only from the configured paper broker; this method cannot
+        submit, cancel, or otherwise alter an order.
+        """
+        broker = self.service.broker
+        if command == "status":
+            state = "pausiert" if self.paused else "aktiv"
+            kill = "aktiv" if self.service.risk.kill_switch else "inaktiv"
+            return f"Analysemodus: {state}. Kill Switch: {kill}.\n⚠️ PAPER TRADING – KEIN ECHTGELD"
+        if command == "signals":
+            symbols = ", ".join(self.watchlist) or "keine"
+            return f"Signale werden nur aus abgeschlossenen Balken berechnet. Watchlist: {symbols}.\nDerzeit liegen keine aktuellen Signale vor."
+        if command == "watchlist":
+            if args:
+                self.watchlist = self._validate_watchlist(tuple(item for arg in args for item in arg.split(",")))
+            return "Watchlist: " + (", ".join(self.watchlist) if self.watchlist else "leer")
+        if broker is None:
+            raise RuntimeError("Kein Paper-Broker konfiguriert.")
+        if command == "account":
+            account = broker.get_account()
+            return f"Paper-Konto\nEquity: {account.equity}\nKaufkraft: {account.buying_power}\nCash: {account.cash}"
+        if command == "positions":
+            positions = broker.list_positions()
+            return "Offene Positionen: keine." if not positions else "Offene Positionen:\n" + "\n".join(
+                f"{p.symbol}: {p.qty} | Marktwert {p.market_value} | Unrealisiert {p.unrealized_pl}" for p in positions
+            )
+        if command == "orders":
+            orders = broker.list_orders(False)
+            return "Orders: keine." if not orders else "Orders:\n" + "\n".join(
+                f"{o.symbol} {o.side} {o.qty} | {o.order_type} | {o.status.value}" for o in orders
+            )
+        if command == "risk":
+            settings = self.service.risk.settings
+            return (
+                "Risikolimits\n"
+                f"Max. Positionsgröße: {settings.max_position_qty}\n"
+                f"Max. offene Positionen: {settings.max_open_positions}\n"
+                f"Max. Tagesverlust: {settings.max_daily_loss_pct}%\n"
+                f"Kill Switch: {'aktiv' if self.service.risk.kill_switch else 'inaktiv'}"
+            )
+        raise ValueError("Unbekannter Befehl.")
 
 def confirmation_keyboard(token: str):
     """Inline buttons attached to a proposed Paper order notification."""
@@ -42,17 +94,20 @@ def build_application(controller: TelegramPaperController, token: str):
     """Create handlers lazily so importing the backtester does not require Telegram."""
     from telegram import Update
     from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes
-    async def guarded(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    async def guarded(update: Update, context: ContextTypes.DEFAULT_TYPE, command: str):
         user=update.effective_user
         if not user or not controller.authorize(user.id):
             if update.effective_message: await update.effective_message.reply_text("Zugriff verweigert.")
             return
-        command=(update.effective_message.text or "").split()[0][1:]
         if command == "kill": controller.kill(); await update.effective_message.reply_text("Kill Switch aktiviert. Neue Paper-Orders sind gesperrt.")
         elif command == "pause": controller.pause(); await update.effective_message.reply_text("Analyse-Benachrichtigungen pausiert.")
         elif command == "resume": controller.resume(); await update.effective_message.reply_text("Benachrichtigungen fortgesetzt; Orders bleiben bestätigungspflichtig.")
         elif command == "help" or command == "start": await update.effective_message.reply_text(HELP)
-        else: await update.effective_message.reply_text("Analysemodus: keine Order ohne zweifache Bestätigung. " + HELP)
+        else:
+            try:
+                await update.effective_message.reply_text(controller.command_message(command, tuple(context.args)))
+            except Exception as exc:
+                await update.effective_message.reply_text(safe_error(exc))
     async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         query=update.callback_query; await query.answer()
         if not query.from_user or not controller.authorize(query.from_user.id): await query.edit_message_text("Zugriff verweigert."); return
@@ -64,7 +119,14 @@ def build_application(controller: TelegramPaperController, token: str):
             await query.edit_message_text("Erste Bestätigung gespeichert. Bitte erneut bestätigen." if order is None else f"Paper-Order {order.status.value} übermittelt.")
         except Exception as exc: await query.edit_message_text(safe_error(exc))
     app=Application.builder().token(token).build()
-    for command in COMMANDS: app.add_handler(CommandHandler(command, guarded))
+    # Bind each command while registering it.  A single handler that reparses
+    # message text loses the command suffix used in group chats (e.g.
+    # ``/account@my_bot``) and used to send every read-only command to its
+    # fallback status response.
+    for command in COMMANDS:
+        async def handler(update, context, registered_command=command):
+            await guarded(update, context, registered_command)
+        app.add_handler(CommandHandler(command, handler))
     app.add_handler(CallbackQueryHandler(callback)); return app
 
 def run_worker(controller: TelegramPaperController, token: str, webhook_url: str = "", webhook_secret: str = "", local_polling: bool = False) -> None:

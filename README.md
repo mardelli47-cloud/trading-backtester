@@ -140,3 +140,9 @@ Unterstützt werden `/start`, `/help`, `/status`, `/signals`, `/positions`,
 Unbekannte Nutzer bekommen weder Konto- noch Orderdaten. Rohfehler und Secrets
 werden nie an Telegram übertragen; Netzwerkfehler führen nie zu einer
 Bestellwiederholung.
+
+`/account`, `/positions`, `/orders` und `/risk` geben ausschließlich die
+jeweiligen Daten des Paper-Brokers bzw. die aktiven Risikolimits aus. `/signals`
+zeigt nur Signale aus abgeschlossenen Balken an. Mit `/watchlist AAPL,MSFT` wird
+die Watchlist für die Signalanzeige gesetzt; ohne Argument zeigt der Befehl die
+aktuelle Watchlist an.

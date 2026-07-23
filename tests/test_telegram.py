@@ -1,12 +1,13 @@
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
+import asyncio
 import logging
 import pytest
 from backtester.broker import MockBroker, OrderRequest
 from backtester.execution import PaperOrderService
 from backtester.risk import RiskManager, RiskSettings
 from backtester.telegram import OrderConfirmations, TelegramSettings
-from backtester.telegram.bot import TelegramPaperController, run_worker
+from backtester.telegram.bot import COMMANDS, TelegramPaperController, build_application, run_worker
 
 NOW=datetime(2026,1,5,15,0,tzinfo=timezone.utc)
 def controller(kill=False):
@@ -72,3 +73,34 @@ def test_network_error_is_not_retried():
     token=c.propose(7,request(),Decimal("100")); c.confirm(7,token)
     with pytest.raises(RuntimeError,match="keine automatische Wiederholung"): c.confirm(7,token)
     assert c.confirm(7,token) is None
+
+def test_read_only_commands_return_their_respective_paper_data():
+    c, _ = controller()
+    assert "Analysemodus" in c.command_message("status")
+    assert "abgeschlossenen Balken" in c.command_message("signals")
+    assert "Offene Positionen" in c.command_message("positions")
+    assert "Orders" in c.command_message("orders")
+    assert "Paper-Konto" in c.command_message("account")
+    assert "Risikolimits" in c.command_message("risk")
+    assert c.command_message("watchlist", ("aapl,msft",)) == "Watchlist: AAPL, MSFT"
+    assert "AAPL, MSFT" in c.command_message("signals")
+
+def test_each_command_handler_dispatches_to_its_registered_command():
+    c, _ = controller()
+    app = build_application(c, "123:abc")
+    handlers = [handler for handler in app.handlers[0] if hasattr(handler, "commands")]
+    assert len(handlers) == len(COMMANDS)
+
+    class Message:
+        def __init__(self): self.replies = []
+        async def reply_text(self, text): self.replies.append(text)
+    class Update:
+        effective_user = type("User", (), {"id": 7})()
+        effective_message = Message()
+    for command, handler in zip(COMMANDS, handlers):
+        update = Update()
+        asyncio.run(handler.callback(update, type("Context", (), {"args": []})()))
+        if command in {"start", "help", "pause", "resume", "kill"}:
+            assert update.effective_message.replies
+        else:
+            assert "Analysemodus: keine Order ohne" not in update.effective_message.replies[0]

@@ -79,7 +79,40 @@ pytest -q
 4. Zeitabhängige Spreads und Volumen-/Liquiditätsfilter.
 5. Separate Long-/Short-Kennzahlen.
 6. Paper-Trading-Adapter erst nach bestandenen Qualitätsprüfungen.
-7. Live-Trading ausschließlich mit harten Risiko-Limits und manueller Freigabe.
+
+## Paper-Trading-Autopilot (Version 1)
+
+> **Paper Trading – kein echtes Geld. Reale Ausführungen können deutlich abweichen.**
+> Der Autopilot ist keine Gewinnzusage und kann technisch *ausschließlich* den
+> Alpaca-Paper-Endpunkt verwenden. Live-Trading, Wallets, Optionen, Shorts,
+> Hebel, Martingale, Grid- und Nachkaufstrategien sind nicht implementiert.
+
+Der Autopilot startet nach jedem Neustart sicher als `DISABLED` (ein zuvor
+gespeicherter `PAPER_ACTIVE`-Zustand wird zu `PAUSED`). Nur Nutzer aus
+`TELEGRAM_ALLOWED_USER_IDS` können ihn bedienen. `/autopilot start` verlangt
+zwei Aufrufe und aktiviert zunächst nur `SHADOW`; `/autopilot paper` ist erst
+nach 50 abgeschlossenen Shadow-Trades (oder einer explizit geprüften
+Konfigurationsänderung) möglich. Verfügbare Zustände sind `DISABLED`, `SHADOW`,
+`PAPER_ACTIVE`, `PAUSED`, `RISK_LOCKED` und `EMERGENCY_STOP`.
+
+Telegram-Kommandos: `/autopilot [start|stop|pause|resume|shadow|paper|report|config|emergency]`,
+`/profit today|week|month`, `/performance`, `/trades open|closed`, `/morning`
+und `/close`. `emergency` aktiviert den Kill Switch; Positionen werden ohne
+separate klare Schließbestätigung nicht blind liquidiert.
+
+Der Scanner akzeptiert nur aktuelle, abgeschlossene Kerzen liquider US-Aktien
+und ETFs (mindestens $5, kein OTC), reguläre Handelszeit, ausreichendes Volumen,
+engen Spread und bestätigten Trend-Pullback oder Breakout. Datenlücken,
+veraltete Daten und doppelte Kerzen führen fail-closed zu keiner Order. Die
+Positionsgröße ist `Kontowert × 0,25 % / (Einstieg − Stop)` und zusätzlich auf
+20 % pro Position, 50 % Gesamtexponierung, drei Positionen und fünf neue Trades
+pro Tag begrenzt. Die zustands- und trade-plan-Persistenz liegt standardmäßig in
+`autopilot_state.json` und sollte im Deployment auf dauerhaftem Storage liegen.
+
+**Render-Hinweis:** Ein Render Free Web Service kann pausieren und ist daher
+nicht zuverlässig für periodische Scans oder 24/7-Betrieb. Nutzen Sie für reale
+regelmäßige Shadow-/Paper-Scans einen persistenten Worker plus externen Scheduler
+und persistenten Datenträger; ein Webhook allein ist kein Scheduler.
 
 ## Echtzeit-Analyse und Alpaca Paper Trading
 

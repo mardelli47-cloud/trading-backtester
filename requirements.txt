@@ -7,4 +7,5 @@ pytest>=8.0
 
 alpaca-py>=0.30
 
-python-telegram-bot>=21.0
+# `run_webhook` requires PTB's optional webhook server dependencies.
+python-telegram-bot[webhooks]>=21.0

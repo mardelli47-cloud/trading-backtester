@@ -208,6 +208,7 @@ st.caption("Live-Trading ist im Code deaktiviert. Signale beruhen ausschließlic
 with st.expander("Watchlist, Signale und Paper-Trading", expanded=False):
     from decimal import Decimal
     from backtester.broker import AlpacaPaperBroker
+    from backtester.market_data import MarketDataService, MarketDataError
     from backtester.execution import PaperOrderService
     from backtester.risk import RiskManager, RiskSettings
 
@@ -227,6 +228,7 @@ with st.expander("Watchlist, Signale und Paper-Trading", expanded=False):
         if paper_value != "true":
             raise ValueError("ALPACA_PAPER muss 'true' sein; Live-Modus ist gesperrt.")
         broker = AlpacaPaperBroker(api_key, secret_key, paper=True)
+        market_data = MarketDataService(api_key, secret_key)
         account = broker.get_account()
         st.success("Verbindungsstatus: Paper-API verbunden")
         cards = st.columns(2)
@@ -235,8 +237,11 @@ with st.expander("Watchlist, Signale und Paper-Trading", expanded=False):
         positions = broker.list_positions()
         orders = broker.list_orders(True)
         st.subheader("Signale")
+        def dashboard_price(symbol):
+            try: return f"${market_data.get_latest_price(symbol):,.2f}"
+            except MarketDataError as exc: return f"Nicht verfügbar: {exc}"
         st.dataframe(pd.DataFrame([{
-            "Symbol": symbol.strip(), "Aktueller Kurs": "Warte auf abgeschlossenen WebSocket-Balken",
+            "Symbol": symbol.strip(), "Aktueller Kurs": dashboard_price(symbol.strip()),
             "Signal": "neutral", "Signalzeit": "–", "Strategie": strategy_name,
             "Stärke": "–", "Position": next((str(p.qty) for p in positions if p.symbol == symbol.strip()), "0"),
             "Unrealisierter G/V": next((str(p.unrealized_pl) for p in positions if p.symbol == symbol.strip()), "0"),

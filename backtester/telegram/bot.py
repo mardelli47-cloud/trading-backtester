@@ -4,6 +4,7 @@ import os
 from decimal import Decimal
 from backtester.broker.base import OrderRequest
 from backtester.execution import PaperOrderService
+from backtester.http_headers import validate_header_values
 from .auth import AccessControl
 from .confirmation import OrderConfirmations
 from .formatting import safe_error
@@ -67,10 +68,17 @@ def build_application(controller: TelegramPaperController, token: str):
     app.add_handler(CallbackQueryHandler(callback)); return app
 
 def run_worker(controller: TelegramPaperController, token: str, webhook_url: str = "", webhook_secret: str = "", local_polling: bool = False) -> None:
-    app=build_application(controller, token)
     if webhook_url:
+        # Telegram sends this header with webhook requests when a secret is set.
+        # Validate it before constructing or starting the Telegram application.
+        if webhook_secret:
+            validate_header_values({
+                "X-Telegram-Bot-Api-Secret-Token": (webhook_secret, "TELEGRAM_WEBHOOK_SECRET"),
+            })
+        app=build_application(controller, token)
         app.run_webhook(listen="0.0.0.0", port=int(os.getenv("PORT", "8080")), url_path="telegram", webhook_url=f"{webhook_url}/telegram", secret_token=webhook_secret or None)
     elif local_polling:
+        app=build_application(controller, token)
         app.run_polling()
     else:
         raise ValueError("Produktiv ist TELEGRAM_WEBHOOK_URL erforderlich; Polling nur mit --local-polling.")

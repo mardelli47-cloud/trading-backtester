@@ -12,6 +12,7 @@ from functools import wraps
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
+from typing import Callable
 
 from backtester.autopilot import Autopilot, AutopilotState
 from backtester.broker.base import OrderRequest
@@ -45,12 +46,13 @@ class Dialog:
 
 
 class TelegramPaperController:
-    def __init__(self, service: PaperOrderService, allowed_ids: frozenset[int], watchlist: tuple[str, ...] = (), autopilot: Autopilot | None = None, store: UserStore | None = None, market_data: MarketDataService | None = None, provider_router: ProviderRouter | None = None, autopilot_runner=None, crypto_autopilot=None, crypto_runner=None):
+    def __init__(self, service: PaperOrderService, allowed_ids: frozenset[int], watchlist: tuple[str, ...] = (), autopilot: Autopilot | None = None, store: UserStore | None = None, market_data: MarketDataService | None = None, provider_router: ProviderRouter | None = None, autopilot_runner=None, crypto_autopilot=None, crypto_runner=None, clock: Callable[[], datetime] | None = None):
         self.service, self.access, self.confirmations = service, AccessControl(allowed_ids), OrderConfirmations()
         self._prices: dict[str, Decimal] = {}; self.paused = False; self.autopilot = autopilot or Autopilot(service)
         self.store = store; self.watchlist = self._validate_watchlist(watchlist); self.dialogs: dict[int, Dialog] = {}; self.market_data = market_data
         self.autopilot_runner = autopilot_runner; self.resolver = InstrumentResolver(); self.provider_router = provider_router or ProviderRouter(alpaca_stock=market_data, global_provider=TwelveDataProvider(), yfinance_provider=YFinanceProvider())
         self.crypto_autopilot, self.crypto_runner = crypto_autopilot, crypto_runner
+        self._clock = clock or (lambda: datetime.now(timezone.utc))
     def authorize(self, user_id: int) -> bool: return self.access.allowed_now(user_id)
     def kill(self) -> None: self.service.risk.kill_switch = True
     def pause(self) -> None: self.paused = True
@@ -113,7 +115,7 @@ class TelegramPaperController:
         if request is None: return None
         price = self._prices.pop(token, None)
         if price is None: raise ValueError("Bestätigung abgelaufen.")
-        return self.service.submit(request, price)
+        return self.service.submit(request, price, now=self._clock())
     @staticmethod
     def _validate_watchlist(symbols):
         cleaned = tuple(dict.fromkeys(s.strip().upper() for s in symbols if s.strip()))

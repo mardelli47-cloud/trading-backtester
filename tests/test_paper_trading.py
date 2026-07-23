@@ -35,6 +35,16 @@ def test_rejected_order_is_visible():
 def test_market_hours_and_kill_switch():
     s,_=service(kill=True)
     with pytest.raises(ValueError,match="Kill Switch"): s.submit(request(),Decimal("100"),NOW)
+def test_market_hours_block_order_when_explicitly_mocked_closed(monkeypatch):
+    s,b=service()
+    monkeypatch.setattr(s,"market_is_open",lambda checked_at: False)
+    with pytest.raises(ValueError,match="außerhalb der Handelszeiten"): s.submit(request(),Decimal("100"),NOW)
+    assert not b.orders
+def test_market_hours_allow_order_when_explicitly_mocked_open(monkeypatch):
+    s,b=service()
+    monkeypatch.setattr(s,"market_is_open",lambda checked_at: True)
+    s.submit(request(),Decimal("100"),NOW)
+    assert len(b.orders) == 1
 def test_closed_bar_lookahead_protection():
     analyzer=ClosedBarAnalyzer("Momentum")
     bar={"timestamp":"2026-01-01T10:00:00Z","open":100,"high":999,"low":1,"close":999,"volume":1,"is_closed":False}

@@ -11,6 +11,8 @@ from backtester.telegram.config import TelegramSettings
 from backtester.telegram.storage import UserStore
 from backtester.telegram.logging import configure_worker_logging
 from backtester.market_data import MarketDataService
+from backtester.autopilot import Autopilot
+from backtester.autopilot_runner import AutopilotRunner
 
 LOG = logging.getLogger(__name__)
 
@@ -23,6 +25,9 @@ def main() -> None:
     account=broker.get_account()
     market_data = MarketDataService(settings.alpaca_api_key, settings.alpaca_secret_key, settings.alpaca_data_feed)
     LOG.info("market_data_initialized provider=alpaca feed=%s health=%s", settings.alpaca_data_feed, market_data.healthcheck())
-    controller=TelegramPaperController(PaperOrderService(broker, RiskManager(RiskSettings(), account.equity), paper_enabled=True), settings.allowed_user_ids, store=UserStore(), market_data=market_data)
+    service = PaperOrderService(broker, RiskManager(RiskSettings(), account.equity), paper_enabled=False)
+    autopilot = Autopilot(service)
+    runner = AutopilotRunner(autopilot, market_data)
+    controller=TelegramPaperController(service, settings.allowed_user_ids, autopilot=autopilot, autopilot_runner=runner, store=UserStore(), market_data=market_data)
     run_worker(controller, settings.token, settings.webhook_url, settings.webhook_secret, args.local_polling)
 if __name__ == "__main__": main()

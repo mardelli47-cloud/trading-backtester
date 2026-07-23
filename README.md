@@ -255,3 +255,15 @@ werden nur noch gültige Cache-Ergebnisse als solche verwendet.
 Deployen Sie anschließend den bestehenden Web Service/Worker neu und prüfen Sie
 `/plan IFX.DE`, `/plan EUR/USD` sowie `/watchlist add DAX`. Provider-Keys, Nutzer- und
 Kontodaten werden weder im Health-Status noch in Telegram-Fehlern ausgegeben.
+
+### Paper-Autopilot
+
+Der Autopilot verarbeitet ausschließlich Alpaca-Marktdaten und Alpaca-Paper-Orders.
+`AUTOPILOT_SCAN_INTERVAL_SECONDS` (mindestens 60, Standard 300),
+`AUTOPILOT_SYMBOLS`, `AUTOPILOT_MIN_SHADOW_TRADES` (Standard 20, mindestens 5),
+`AUTOPILOT_MAX_SYMBOLS` (maximal 20) und `AUTOPILOT_PLAN_MAX_AGE_MINUTES`
+konfigurieren den begrenzten Scan. Der Runner startet im Telegram-Application-Lifecycle;
+`/autopilot scan` führt zusätzlich genau einen manuellen Zyklus aus. Shadow-Positionen
+werden bei Stop, Ziel (bei gleicher Kerze konservativ zuerst Stop) oder Timeout geschlossen
+und persistent ausgewertet. Render Free kann einschlafen; für zuverlässige Überwachung ist
+ein Always-on-Service oder Background Worker erforderlich.

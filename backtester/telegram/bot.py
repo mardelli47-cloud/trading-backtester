@@ -45,11 +45,11 @@ class Dialog:
 
 
 class TelegramPaperController:
-    def __init__(self, service: PaperOrderService, allowed_ids: frozenset[int], watchlist: tuple[str, ...] = (), autopilot: Autopilot | None = None, store: UserStore | None = None, market_data: MarketDataService | None = None, provider_router: ProviderRouter | None = None):
+    def __init__(self, service: PaperOrderService, allowed_ids: frozenset[int], watchlist: tuple[str, ...] = (), autopilot: Autopilot | None = None, store: UserStore | None = None, market_data: MarketDataService | None = None, provider_router: ProviderRouter | None = None, autopilot_runner=None):
         self.service, self.access, self.confirmations = service, AccessControl(allowed_ids), OrderConfirmations()
         self._prices: dict[str, Decimal] = {}; self.paused = False; self.autopilot = autopilot or Autopilot(service)
         self.store = store; self.watchlist = self._validate_watchlist(watchlist); self.dialogs: dict[int, Dialog] = {}; self.market_data = market_data
-        self.resolver = InstrumentResolver(); self.provider_router = provider_router or ProviderRouter(alpaca_stock=market_data, global_provider=TwelveDataProvider(), yfinance_provider=YFinanceProvider())
+        self.autopilot_runner = autopilot_runner; self.resolver = InstrumentResolver(); self.provider_router = provider_router or ProviderRouter(alpaca_stock=market_data, global_provider=TwelveDataProvider(), yfinance_provider=YFinanceProvider())
     def authorize(self, user_id: int) -> bool: return self.access.allowed_now(user_id)
     def kill(self) -> None: self.service.risk.kill_switch = True
     def pause(self) -> None: self.paused = True
@@ -170,9 +170,16 @@ class TelegramPaperController:
         if command == "autopilot":
             action = args[0].lower() if args else "status"
             if action in {"status", "report", "config"}:
-                return self.autopilot.status() + f"\nPause: {'aktiv' if self.paused else 'inaktiv'}; Kill Switch: {'aktiv' if self.service.risk.kill_switch else 'inaktiv'}"
+                return self.autopilot.status() + ("\n" + self.autopilot_runner.status() if self.autopilot_runner else "") + f"\nPause: {'aktiv' if self.paused else 'inaktiv'}; Kill Switch: {'aktiv' if self.service.risk.kill_switch else 'inaktiv'}"
             if action in {"start", "on"}: return self.autopilot.start()
-            if action in {"stop", "off"}: self.autopilot.transition(AutopilotState.PAUSED); return "Autopilot deaktiviert; keine neuen Trades."
+            if action == "scan":
+                if not self.autopilot_runner: raise ValueError("Runner nicht konfiguriert.")
+                report = self.autopilot_runner.run_cycle(); return f"Scan: geprüft {len(report['checked'])}, akzeptiert {len(report['accepted'])}, abgelehnt {len(report['rejected'])}."
+            if action == "last": return self.autopilot_runner.status() if self.autopilot_runner else "Kein Runner konfiguriert."
+            if action == "shadow": return f"Shadow-Trades: offen {len(self.autopilot.open_plans)}, abgeschlossen {self.autopilot.shadow_closed}."
+            if action == "paper": return self.autopilot.activate_paper()
+            if action in {"stop", "off"}: self.autopilot.transition(AutopilotState.DISABLED); return "Autopilot deaktiviert; keine neuen Trades."
+            if action == "kill": self.autopilot.emergency(); return "Kill Switch aktiviert."
             if action == "pause": self.autopilot.transition(AutopilotState.PAUSED); return "Autopilot pausiert; keine neuen Trades."
             if action == "resume":
                 if self.autopilot.state in {AutopilotState.RISK_LOCKED, AutopilotState.EMERGENCY_STOP}: raise ValueError("Manuelle Sicherheitsprüfung erforderlich.")
@@ -322,7 +329,7 @@ def build_application(controller: TelegramPaperController, token: str):
                 if symbol: controller.add_watchlist(user_id, symbol); await query.edit_message_text(f"{symbol} zur Watchlist hinzugefügt.")
                 return
             if action == "ap":
-                mapping = {"on":"start", "off":"stop", "pause":"pause", "resume":"resume", "status":"status"}
+                mapping = {"on":"start", "off":"stop", "pause":"pause", "resume":"resume", "status":"status", "scan":"scan", "last":"last", "shadow":"shadow", "paper":"paper", "kill":"kill"}
                 await query.edit_message_text(controller.command_message("autopilot", (mapping[value],), user_id), reply_markup=keyboard("autopilot")); return
             if action == "cmd": await query.edit_message_text(controller.command_message(value, (), user_id), reply_markup=keyboard("account") if value == "account" else None); return
             if action in {"pl", "sc", "ob", "os"}: await query.edit_message_text("Diese Funktion benötigt aktuelle, abgeschlossene Marktdaten bzw. den geführten Paper-Order-Workflow und ist sicher nicht automatisch ausführbar."); return
@@ -332,7 +339,11 @@ def build_application(controller: TelegramPaperController, token: str):
             incident_id = error_id()
             LOG.exception("telegram_handler_failed action=%s update_type=%s error_id=%s", data or "callback", update_type(update), incident_id)
             await query.edit_message_text(safe_error(exc, incident_id))
-    app = Application.builder().token(token).build()
+    async def _post_init(application):
+        if controller.autopilot_runner: await controller.autopilot_runner.start()
+    async def _post_shutdown(application):
+        if controller.autopilot_runner: await controller.autopilot_runner.stop()
+    app = Application.builder().token(token).post_init(_post_init).post_shutdown(_post_shutdown).build()
     for command in COMMANDS:
         @authorized_only
         async def handler(update, context, registered_command=command):

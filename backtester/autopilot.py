@@ -13,6 +13,7 @@ from decimal import Decimal, ROUND_DOWN
 from enum import Enum
 import json
 from pathlib import Path
+import os
 from typing import Iterable
 
 from backtester.broker.base import OrderRequest
@@ -37,7 +38,7 @@ class AutopilotConfig:
     max_spread_pct: Decimal = Decimal("0.25")
     min_score: Decimal = Decimal("7")
     max_data_age_seconds: int = 90
-    min_shadow_trades: int = 50
+    min_shadow_trades: int = 20
     max_daily_loss_pct: Decimal = Decimal("2")
 
 
@@ -66,8 +67,12 @@ class Autopilot:
         self.state = AutopilotState.DISABLED
         self.processed_candles: set[str] = set(); self.open_plans: dict[str, TradePlan] = {}
         self.order_ids: dict[str, str] = {}; self.last_signals: dict[str, str] = {}
-        self.new_trades_today = 0; self.shadow_closed = 0; self.critical_errors = 0
-        self._pending_start = False; self.load()
+        self.new_trades_today = 0; self.shadow_closed = 0; self.critical_errors = 0; self.shadow_results: list[dict[str, str]] = []
+        self._pending_start = False; self._pending_paper = False
+        configured_min = int(os.getenv("AUTOPILOT_MIN_SHADOW_TRADES", str(self.config.min_shadow_trades)))
+        if configured_min < 5: configured_min = 5
+        self.config = AutopilotConfig(**{**asdict(self.config), "min_shadow_trades": configured_min})
+        self.load()
         # Never resume trading due to a restart, even if persisted state was active.
         if self.state is AutopilotState.PAPER_ACTIVE:
             self.state = AutopilotState.PAUSED
@@ -78,14 +83,14 @@ class Autopilot:
         payload = {"state": self.state.value, "processed_candles": sorted(self.processed_candles),
                    "open_plans": {k: {**asdict(v), "entry": str(v.entry), "stop": str(v.stop), "target": str(v.target), "qty": str(v.qty)} for k,v in self.open_plans.items()},
                    "order_ids": self.order_ids, "last_signals": self.last_signals,
-                   "new_trades_today": self.new_trades_today, "shadow_closed": self.shadow_closed, "critical_errors": self.critical_errors}
+                   "new_trades_today": self.new_trades_today, "shadow_closed": self.shadow_closed, "critical_errors": self.critical_errors, "shadow_results": self.shadow_results}
         self.path.parent.mkdir(parents=True, exist_ok=True); self.path.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
 
     def load(self) -> None:
         if not self.path.exists(): return
         data = json.loads(self.path.read_text(encoding="utf-8")); self.state = AutopilotState(data.get("state", "DISABLED"))
         self.processed_candles = set(data.get("processed_candles", [])); self.order_ids = data.get("order_ids", {}); self.last_signals = data.get("last_signals", {})
-        self.new_trades_today = data.get("new_trades_today", 0); self.shadow_closed = data.get("shadow_closed", 0); self.critical_errors = data.get("critical_errors", 0)
+        self.new_trades_today = data.get("new_trades_today", 0); self.shadow_closed = data.get("shadow_closed", 0); self.critical_errors = data.get("critical_errors", 0); self.shadow_results = data.get("shadow_results", [])
         self.open_plans = {symbol: TradePlan(symbol, item["strategy"], Decimal(item["entry"]), Decimal(item["stop"]), Decimal(item["target"]), Decimal(item["qty"]), item["candle_id"]) for symbol, item in data.get("open_plans", {}).items()}
 
     def transition(self, target: AutopilotState, *, override_shadow: bool = False) -> None:
@@ -98,6 +103,14 @@ class Autopilot:
     def start(self) -> str:
         if not self._pending_start: self._pending_start = True; return "Erste Bestätigung gespeichert. Wiederhole /autopilot start innerhalb dieser Sitzung."
         self._pending_start = False; self.transition(AutopilotState.SHADOW); return "Shadow-Autopilot gestartet; es werden keine Brokerorders gesendet."
+
+    def activate_paper(self) -> str:
+        if self.shadow_closed < self.config.min_shadow_trades: raise ValueError(f"Paper-Modus gesperrt: mindestens {self.config.min_shadow_trades} abgeschlossene Shadow-Trades erforderlich.")
+        if self.service.risk.kill_switch: raise ValueError("Kill Switch aktiv.")
+        if os.getenv("ALPACA_PAPER", "true").lower() != "true": raise ValueError("ALPACA_PAPER=false blockiert die Aktivierung.")
+        if not self._pending_paper:
+            self._pending_paper = True; return "Erste Paper-Bestätigung gespeichert. Wiederhole /autopilot paper."
+        self._pending_paper = False; self.transition(AutopilotState.PAPER_ACTIVE); return "Paper-Autopilot aktiviert (nur Alpaca Paper)."
 
     def lock(self, reason: str) -> None:
         self.state = AutopilotState.RISK_LOCKED; self.service.paper_enabled = False; self.critical_errors += 1; self.last_signals["risk_lock"] = reason; self.save()
@@ -147,8 +160,17 @@ class Autopilot:
         order = self.service.submit(OrderRequest(plan.symbol, "buy", plan.qty, client_order_id=f"autopilot-{plan.candle_id}"), plan.entry, now)
         self.open_plans[plan.symbol] = plan; self.order_ids[plan.symbol] = order.id; self.new_trades_today += 1; self.save(); return order.id
 
+    def close_shadow(self, symbol: str, exit_price: Decimal, reason: str, now: datetime | None = None) -> None:
+        """Persist one virtual close; deleting first makes repeated monitoring idempotent."""
+        plan = self.open_plans.pop(symbol, None)
+        if plan is None: return
+        risk = plan.entry - plan.stop
+        pnl = (exit_price - plan.entry) * plan.qty
+        self.shadow_results.append({"symbol": symbol, "exit": str(exit_price), "reason": reason, "pnl": str(pnl), "r_multiple": str((exit_price - plan.entry) / risk if risk else 0), "closed_at": (now or datetime.now(timezone.utc)).isoformat()})
+        self.shadow_closed += 1; self.save()
+
     def status(self) -> str:
         return (f"Autopilot: {self.state.value}\nStrategien: Trend-Pullback, bestätigter Breakout (long-only)\n"
                 f"Risiko/Trade: {self.config.risk_per_trade_pct}%; Positionen: max. {self.config.max_open_positions}; "
-                f"Tagestrades: {self.new_trades_today}/{self.config.max_new_trades_per_day}\n"
+                f"Tagestrades: {self.new_trades_today}/{self.config.max_new_trades_per_day}; offene Shadow-Trades: {len(self.open_plans)}; abgeschlossene Shadow-Trades: {self.shadow_closed}/{self.config.min_shadow_trades}\n"
                 "Paper Trading – kein echtes Geld. Reale Ausführungen können deutlich abweichen.")

@@ -118,11 +118,15 @@ werden **nicht** automatisch mit einer weiteren Order beantwortet.
 2. `TELEGRAM_ALLOWED_USER_IDS` als kommagetrennte numerische Whitelist setzen und
    `ALPACA_PAPER=true` beibehalten. Alles andere wird fail-closed abgewiesen.
 3. Lokal (nur Entwicklung): `python telegram_worker.py --local-polling`.
-4. Dauerhaft: einen Python-Worker bei Render oder Railway betreiben, die
-   Umgebungsvariablen in dessen Secret Store hinterlegen und `TELEGRAM_WEBHOOK_URL`
-   auf die öffentliche HTTPS-URL setzen. Startbefehl: `python telegram_worker.py`.
+4. Bei **Render** einen **Web Service** (keinen Background Worker) verwenden: Der
+   Startbefehl ist `python telegram_worker.py` und Render setzt `PORT`
+   automatisch. Der Worker bindet seinen PTB-Webhook-Server an `0.0.0.0:$PORT`,
+   damit Render den offenen Port erkennen und Telegram ihn erreichen kann.
+   `TELEGRAM_WEBHOOK_URL` im Secret Store auf die öffentliche HTTPS-URL des
+   Services **ohne** abschließendes `/telegram` setzen; der Worker ergänzt den
+   Webhook-Pfad selbst. Das mitgelieferte `render.yaml` enthält diese Einstellungen.
    Streamlit Community Cloud ist hierfür ungeeignet, weil sie keinen dauerhaft
-   laufenden Worker garantiert.
+   laufenden Web-Service garantiert.
 
 Beim Start prüft der Worker die Werte, die als HTTP-Header verwendet werden,
 bevor er einen Alpaca-Client oder Telegram-Webhook erstellt. Dabei werden nur

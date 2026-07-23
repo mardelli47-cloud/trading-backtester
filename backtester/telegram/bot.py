@@ -76,7 +76,11 @@ def run_worker(controller: TelegramPaperController, token: str, webhook_url: str
                 "X-Telegram-Bot-Api-Secret-Token": (webhook_secret, "TELEGRAM_WEBHOOK_SECRET"),
             })
         app=build_application(controller, token)
-        app.run_webhook(listen="0.0.0.0", port=int(os.getenv("PORT", "8080")), url_path="telegram", webhook_url=f"{webhook_url}/telegram", secret_token=webhook_secret or None)
+        # Render Web Services publish the listener that uses their injected PORT.
+        # PTB calls the bind-address argument `listen`; it is the server host.
+        host = "0.0.0.0"
+        port = int(os.environ["PORT"])
+        app.run_webhook(listen=host, port=port, url_path="telegram", webhook_url=f"{webhook_url}/telegram", secret_token=webhook_secret or None)
     elif local_polling:
         app=build_application(controller, token)
         app.run_polling()

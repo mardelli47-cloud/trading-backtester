@@ -56,6 +56,17 @@ def test_webhook_header_validation_identifies_only_source_environment_variable(m
     assert "secret-" not in str(exc_info.value)
     assert "X-Telegram-Bot-Api-Secret-Token" in caplog.text
     assert "secret-" not in caplog.text
+def test_webhook_binds_to_render_host_and_port(monkeypatch):
+    calls = []
+    class Application:
+        def run_webhook(self, **kwargs): calls.append(kwargs)
+    monkeypatch.setenv("PORT", "10000")
+    monkeypatch.setattr("backtester.telegram.bot.build_application", lambda *_: Application())
+    run_worker(controller()[0], "token", "https://bot.example")
+    assert calls == [{
+        "listen": "0.0.0.0", "port": 10000, "url_path": "telegram",
+        "webhook_url": "https://bot.example/telegram", "secret_token": None,
+    }]
 def test_network_error_is_not_retried():
     c,b=controller(); b.submit_order=lambda _: (_ for _ in ()).throw(OSError("offline"))
     token=c.propose(7,request(),Decimal("100")); c.confirm(7,token)

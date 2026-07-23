@@ -9,13 +9,14 @@ from backtester.risk import RiskManager, RiskSettings
 from backtester.telegram.bot import TelegramPaperController, run_worker
 from backtester.telegram.config import TelegramSettings
 from backtester.telegram.storage import UserStore
+from backtester.telegram.logging import configure_worker_logging
 from backtester.market_data import MarketDataService
 
 LOG = logging.getLogger(__name__)
 
 def main() -> None:
     parser=argparse.ArgumentParser(); parser.add_argument("--local-polling", action="store_true", help="Nur lokale Entwicklung; Produktion verwendet Webhook."); args=parser.parse_args()
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
+    configure_worker_logging()
     settings=TelegramSettings.from_env()
     LOG.info("telegram_allowed_ids_present=%s count=%d", bool(settings.allowed_user_ids), len(settings.allowed_user_ids))
     broker=AlpacaPaperBroker(settings.alpaca_api_key, settings.alpaca_secret_key, paper=settings.alpaca_paper)

@@ -21,11 +21,11 @@ from backtester.market_data import MarketDataError, MarketDataService
 from backtester.instruments import InstrumentResolver, ProviderRouter, YFinanceProvider, TwelveDataProvider, CATALOG
 from .auth import AccessControl
 from .confirmation import OrderConfirmations
-from .formatting import safe_error
+from .formatting import error_id, safe_error
 from .storage import UserStore
 from .ui import keyboard, reply_keyboard
 
-COMMANDS = ("start", "menu", "help", "morning", "daily", "midday", "close", "scan", "plan", "upcoming", "account", "positions", "orders", "risk", "signals", "watchlist", "autopilot", "pause", "resume", "kill", "journal", "performance", "compact", "detailed", "buy", "sell", "status", "profit", "trades", "whoami")
+COMMANDS = ("start", "menu", "help", "morning", "daily", "midday", "close", "scan", "plan", "upcoming", "account", "positions", "orders", "risk", "signals", "watchlist", "autopilot", "pause", "resume", "kill", "journal", "performance", "compact", "detailed", "settings", "buy", "sell", "status", "profit", "trades", "whoami")
 HELP = "Trading-App (nur Alpaca Paper Trading): Nutze das Menü oder /help. Keine Gewinnzusage; Signale verwenden nur abgeschlossene Kerzen."
 _SYMBOL = re.compile(r"^[A-Z^][A-Z0-9.=\-/^]{0,9}$")
 _BUTTON_COMMANDS = {"📊 Analyse": "analyse", "🔎 Scanner": "scan", "⭐ Watchlist": "watchlist", "🌅 Morning": "morning", "💼 Konto": "account", "📈 Positionen": "positions", "🧾 Orders": "orders", "⚙️ Risiko": "risk", "🤖 Autopilot": "autopilot", "📔 Journal": "journal", "📅 Termine": "upcoming", "⚙️ Einstellungen": "settings", "🔄 Aktualisieren": "account", "❓ Hilfe": "help"}
@@ -194,6 +194,7 @@ class TelegramPaperController:
             symbol = self.validate_symbol(args[0]) if args else None
             return self.analysis_message(symbol, True) if symbol else "Bitte nutze /plan SYMBOL. Das Symbol konnte nicht gefunden werden."
         if command == "journal": return "📔 Journal\nNoch keine persistenten Trade-Journal-Einträge vorhanden."
+        if command == "settings": return "⚙️ Einstellungen\nNutze /compact oder /detailed für die Anzeigeansicht."
         if command in {"profit", "performance", "trades"}: return "📈 Performance\nNoch keine vollständig berechneten abgeschlossenen Paper-Trades."
         if command == "status": return f"Analysemodus: {'pausiert' if self.paused else 'aktiv'}. Kill Switch: {'aktiv' if self.service.risk.kill_switch else 'inaktiv'}.\n⚠️ PAPER TRADING – KEIN ECHTGELD"
         if command == "signals": return "Signale werden nur aus abgeschlossenen Balken berechnet. Watchlist: " + (", ".join(self.user_watchlist(user_id)) or "keine") + "."
@@ -252,7 +253,10 @@ def build_application(controller: TelegramPaperController, token: str):
                 return
             return await handler(update, context, *args, **kwargs)
         return wrapped
-    async def guarded(update: Update, context: ContextTypes.DEFAULT_TYPE, command: str):
+    def update_type(update: Update) -> str:
+        return "callback_query" if getattr(update, "callback_query", None) is not None else "message"
+
+    async def guarded(update: Update, context: ContextTypes.DEFAULT_TYPE, command: str, args: tuple[str, ...] = ()):
         user, message = update.effective_user, update.effective_message
         if command in {"start", "menu"}: await reply(message, "Willkommen. Wähle eine Funktion:", reply_markup=reply_keyboard()); return
         if command == "help": await reply(message, HELP, reply_markup=reply_keyboard()); return
@@ -265,10 +269,13 @@ def build_application(controller: TelegramPaperController, token: str):
         if command == "kill": controller.kill(); await reply(message, "Kill Switch aktiviert. Neue Paper-Orders sind gesperrt."); return
         if command == "buy" or command == "sell": await reply(message, "Paper-Order-Workflow: wähle zuerst ein Symbol in einer Analyse; jede Order benötigt zwei Bestätigungen."); return
         try:
-            text = controller.command_message(command, tuple(context.args), user.id)
+            text = controller.command_message(command, tuple(args), user.id)
             kind = {"watchlist":"watchlist", "autopilot":"autopilot", "account":"account", "scan":"scanner"}.get(command)
             await reply(message, text, reply_markup=keyboard(kind) if kind else None)
-        except Exception as exc: await reply(message, safe_error(exc))
+        except Exception as exc:
+            incident_id = error_id()
+            LOG.exception("telegram_handler_failed action=%s update_type=%s error_id=%s", command, update_type(update), incident_id)
+            await reply(message, safe_error(exc, incident_id))
     @authorized_only
     async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user, message = update.effective_user, update.effective_message
@@ -279,7 +286,7 @@ def build_application(controller: TelegramPaperController, token: str):
                 controller.begin_dialog(user.id, "analyse")
                 choices = [[InlineKeyboardButton(s, callback_data=f"an:{s}") for s in ("AAPL", "NVDA", "TSLA")], [InlineKeyboardButton("TSEM", callback_data="an:TSEM"), InlineKeyboardButton("SPY", callback_data="an:SPY")], [InlineKeyboardButton("Eigenes Symbol eingeben", callback_data="an:custom"), InlineKeyboardButton("Abbrechen", callback_data="cancel")]]
                 await reply(message, "Welches Symbol möchtest du analysieren?", reply_markup=InlineKeyboardMarkup(choices)); return
-            await guarded(update, context, command); return
+            await guarded(update, context, command, ()); return
         consumed = controller.consume_dialog(user.id, text)
         if consumed:
             action, symbol = consumed
@@ -318,11 +325,16 @@ def build_application(controller: TelegramPaperController, token: str):
             if action in {"pl", "sc", "ob", "os"}: await query.edit_message_text("Diese Funktion benötigt aktuelle, abgeschlossene Marktdaten bzw. den geführten Paper-Order-Workflow und ist sicher nicht automatisch ausführbar."); return
             await query.edit_message_text("Dieser Button ist abgelaufen oder ungültig.")
         except (ValueError, KeyError): await query.edit_message_text("Dieser Button ist abgelaufen oder ungültig.")
-        except Exception as exc: await query.edit_message_text(safe_error(exc))
+        except Exception as exc:
+            incident_id = error_id()
+            LOG.exception("telegram_handler_failed action=%s update_type=%s error_id=%s", data or "callback", update_type(update), incident_id)
+            await query.edit_message_text(safe_error(exc, incident_id))
     app = Application.builder().token(token).build()
     for command in COMMANDS:
         @authorized_only
-        async def handler(update, context, registered_command=command): await guarded(update, context, registered_command)
+        async def handler(update, context, registered_command=command):
+            args = tuple(getattr(context, "args", None) or ())
+            await guarded(update, context, registered_command, args)
         app.add_handler(CommandHandler(command, handler))
     app.add_handler(CallbackQueryHandler(callback)); app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler)); return app
 

@@ -123,7 +123,10 @@ und persistenten Datenträger; ein Webhook allein ist kein Scheduler.
 1. Einen kostenlosen [Alpaca Paper Account](https://alpaca.markets/) erstellen und
    dort Paper-API-Schlüssel erzeugen.
 2. Die Schlüssel ausschließlich als `ALPACA_API_KEY`, `ALPACA_SECRET_KEY` und
-   `ALPACA_PAPER=true` in der Umgebung bzw. im Secret Store setzen. Sie dürfen
+   `ALPACA_PAPER=true` in der Umgebung bzw. im Secret Store setzen. Für Kurse
+   und historische Bars wird der getrennte Alpaca-Market-Data-Client verwendet;
+   `ALPACA_DATA_FEED=iex` ist der sichere Standard für kostenlose Paper-Konten.
+   `sip` nur bei bestätigter Berechtigung setzen. Die Schlüssel dürfen
    weder in `secrets.toml` noch im Quellcode stehen, committed oder geloggt werden.
 
 Starten Sie das Dashboard mit `streamlit run app.py`. Im Bereich **Echtzeit-Dashboard**
@@ -148,8 +151,12 @@ werden **nicht** automatisch mit einer weiteren Order beantwortet.
 1. `cp .env.example .env` und **nur lokal bzw. im Secret Store** befüllen.
    Alle Werte werden ausschließlich aus Umgebungsvariablen gelesen; weder
    Streamlit-Secrets noch Quellcode enthalten Schlüssel.
-2. `TELEGRAM_ALLOWED_USER_IDS` als kommagetrennte numerische Whitelist setzen und
-   `ALPACA_PAPER=true` beibehalten. Alles andere wird fail-closed abgewiesen.
+2. `TELEGRAM_ALLOWED_USER_IDS` als numerische Whitelist setzen und
+   `ALPACA_PAPER=true` beibehalten. Erlaubt sind z. B. `123456789`,
+   `123456789, 987654321`, `"123456789"` oder `[123456789]`. Die Prüfung nutzt
+   bei Commands, Text-/Reply-Buttons, Inline-Buttons und Dialogen ausschließlich
+   die Telegram-**User-ID** (`effective_user.id`), nicht die Chat-ID. Mit
+   `/whoami` kann ein erlaubter Nutzer die IDs und den Status prüfen.
 3. Lokal (nur Entwicklung): `python telegram_worker.py --local-polling`.
 4. Bei **Render** einen **Web Service** (keinen Background Worker) verwenden: Der
    Startbefehl ist `python telegram_worker.py` und Render setzt `PORT`
@@ -196,9 +203,13 @@ Die Watchlist und die Ansichtsoption werden über eine Storage-Abstraktion
 gespeichert: lokal SQLite (`telegram_state.sqlite3`), bei gesetztem
 `DATABASE_URL` PostgreSQL. Für Render ist eine persistente PostgreSQL-Datenbank
 erforderlich; ohne diese ist lokaler Dateispeicher nach einem Neustart nicht
-garantiert. Markt-, Earnings- und Wirtschaftstermine werden nur mit einer
-konfigurierten Datenquelle dargestellt. Fehlt sie, meldet der Bot dies klar und
-erfindet weder Kurse, Scores, Nachrichten noch Termine.
+garantiert. Der gemeinsame `MarketDataService` lädt letzte Trades/Quotes und
+historische Aktienbars über die **Alpaca Market Data API**, nicht über den
+Trading-Endpunkt. Einzelanalysen verwenden mindestens 100 abgeschlossene Tages-
+und, soweit verfügbar, 15-Minuten-Bars. Die laufende Kerze wird nicht als
+bestätigtes Signal verwendet. Fehlen Intraday-Bars, bleibt die Tagesanalyse
+sichtbar und markiert den fehlenden Intraday-Teil; bei Daten-, Berechtigungs-,
+Rate-Limit- und Timeout-Fehlern werden keine Kurse oder Scores erfunden.
 
 `/account`, `/positions`, `/orders` und `/risk` geben ausschließlich die
 jeweiligen Daten des Paper-Brokers bzw. die aktiven Risikolimits aus. `/signals`

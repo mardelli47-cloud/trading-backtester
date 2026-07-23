@@ -7,6 +7,8 @@ existing two-click confirmation service.
 from __future__ import annotations
 import os
 import re
+import logging
+from functools import wraps
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
@@ -15,16 +17,23 @@ from backtester.autopilot import Autopilot, AutopilotState
 from backtester.broker.base import OrderRequest
 from backtester.execution import PaperOrderService
 from backtester.http_headers import validate_header_values
+from backtester.market_data import MarketDataError, MarketDataService
 from .auth import AccessControl
 from .confirmation import OrderConfirmations
 from .formatting import safe_error
 from .storage import UserStore
 from .ui import keyboard, reply_keyboard
 
-COMMANDS = ("start", "menu", "help", "morning", "daily", "midday", "close", "scan", "plan", "upcoming", "account", "positions", "orders", "risk", "signals", "watchlist", "autopilot", "pause", "resume", "kill", "journal", "performance", "compact", "detailed", "buy", "sell", "status", "profit", "trades")
+COMMANDS = ("start", "menu", "help", "morning", "daily", "midday", "close", "scan", "plan", "upcoming", "account", "positions", "orders", "risk", "signals", "watchlist", "autopilot", "pause", "resume", "kill", "journal", "performance", "compact", "detailed", "buy", "sell", "status", "profit", "trades", "whoami")
 HELP = "Trading-App (nur Alpaca Paper Trading): Nutze das Menü oder /help. Keine Gewinnzusage; Signale verwenden nur abgeschlossene Kerzen."
 _SYMBOL = re.compile(r"^[A-Z][A-Z0-9.\-]{0,9}$")
 _BUTTON_COMMANDS = {"📊 Analyse": "analyse", "🔎 Scanner": "scan", "⭐ Watchlist": "watchlist", "🌅 Morning": "morning", "💼 Konto": "account", "📈 Positionen": "positions", "🧾 Orders": "orders", "⚙️ Risiko": "risk", "🤖 Autopilot": "autopilot", "📔 Journal": "journal", "📅 Termine": "upcoming", "⚙️ Einstellungen": "settings", "🔄 Aktualisieren": "account", "❓ Hilfe": "help"}
+LOG = logging.getLogger(__name__)
+
+def is_user_allowed(update, allowed_ids: frozenset[int]) -> bool:
+    """Authorize every Telegram update exclusively by effective_user.id."""
+    user = getattr(update, "effective_user", None)
+    return bool(user and isinstance(getattr(user, "id", None), int) and user.id in allowed_ids)
 
 @dataclass
 class Dialog:
@@ -35,10 +44,10 @@ class Dialog:
 
 
 class TelegramPaperController:
-    def __init__(self, service: PaperOrderService, allowed_ids: frozenset[int], watchlist: tuple[str, ...] = (), autopilot: Autopilot | None = None, store: UserStore | None = None):
+    def __init__(self, service: PaperOrderService, allowed_ids: frozenset[int], watchlist: tuple[str, ...] = (), autopilot: Autopilot | None = None, store: UserStore | None = None, market_data: MarketDataService | None = None):
         self.service, self.access, self.confirmations = service, AccessControl(allowed_ids), OrderConfirmations()
         self._prices: dict[str, Decimal] = {}; self.paused = False; self.autopilot = autopilot or Autopilot(service)
-        self.store = store; self.watchlist = self._validate_watchlist(watchlist); self.dialogs: dict[int, Dialog] = {}
+        self.store = store; self.watchlist = self._validate_watchlist(watchlist); self.dialogs: dict[int, Dialog] = {}; self.market_data = market_data
     def authorize(self, user_id: int) -> bool: return self.access.allowed_now(user_id)
     def kill(self) -> None: self.service.risk.kill_switch = True
     def pause(self) -> None: self.paused = True
@@ -52,6 +61,8 @@ class TelegramPaperController:
         if not symbol: return None
         # Alpaca validation when supported by the configured adapter.  Mock and
         # legacy adapters retain regex validation for deterministic tests.
+        if self.market_data is not None:
+            return symbol if self.market_data.validate_symbol(symbol) else None
         client = getattr(self.service.broker, "client", None)
         if client is not None:
             try:
@@ -96,11 +107,32 @@ class TelegramPaperController:
         if any(not _SYMBOL.fullmatch(s) for s in cleaned): raise ValueError("Watchlist enthält ein ungültiges Symbol.")
         return cleaned
     def analysis_message(self, symbol: str, detailed: bool = True) -> str:
-        # Do not fabricate market data. Dedicated market-data integrations can
-        # replace this deterministic, honest unavailable response.
         heading = f"📊 Analyse: {symbol}\n"
-        if detailed: heading += "Marktdaten sind in diesem Worker derzeit nicht verfügbar; daher werden weder Kurs noch Score erfunden.\n"
-        return heading + "Fazit: Aktuell kein Trade ohne aktuelle, abgeschlossene Kurskerzen.\n⚠️ PAPER TRADING – KEIN ECHTGELD"
+        if self.market_data is None:
+            return heading + "Marktdaten sind in diesem Worker derzeit nicht verfügbar; daher werden weder Kurs noch Score erfunden.\nFazit: Aktuell kein Trade ohne aktuelle, abgeschlossene Kurskerzen.\n⚠️ PAPER TRADING – KEIN ECHTGELD"
+        try:
+            daily = self.market_data.get_daily_bars(symbol, 101)
+            price = self.market_data.get_latest_price(symbol)
+            close = daily["close"].astype(float)
+            high, low = daily["high"].astype(float), daily["low"].astype(float)
+            trend = "aufwärts" if close.iloc[-1] >= close.tail(20).mean() else "abwärts"
+            momentum = (close.iloc[-1] / close.iloc[-10] - 1) * 100 if len(close) >= 10 else 0
+            atr = (high - low).tail(14).mean()
+            support, resistance = low.tail(20).min(), high.tail(20).max()
+            intraday_note = ""
+            try:
+                intra = self.market_data.get_intraday_bars(symbol, "15Min", 101)
+                rel_volume = intra["volume"].tail(20).mean() / intra["volume"].tail(100).mean() if len(intra) >= 20 else 0
+            except MarketDataError:
+                rel_volume = None; intraday_note = "\nIntraday: vorübergehend nicht verfügbar; Tagesanalyse bleibt gültig."
+            score = min(100, max(0, round(50 + (10 if trend == "aufwärts" else -10) + momentum * 3)))
+            trigger, stop = resistance * 1.001, support
+            target = trigger + 2 * max(trigger - stop, atr)
+            return (heading + f"Kurs: ${price:.2f}\nTrend: {trend}\nMomentum (10T): {momentum:+.2f}%\n"
+                    + (f"Relatives Volumen: {rel_volume:.2f}\n" if rel_volume is not None else "")
+                    + f"ATR (14T): ${atr:.2f}\nUnterstützung: ${support:.2f}\nWiderstand: ${resistance:.2f}\nSetup-Score: {score}/100\nEinstiegstrigger: ${trigger:.2f}\nStop: ${stop:.2f}\nZiel: ${target:.2f}{intraday_note}\nFazit: Nur nach bestätigtem Signal aus abgeschlossenen Kerzen handeln.\n⚠️ PAPER TRADING – KEIN ECHTGELD")
+        except MarketDataError as exc:
+            return heading + f"Marktdaten konnten nicht geladen werden: {exc}\nEs werden keine Werte erfunden.\n⚠️ PAPER TRADING – KEIN ECHTGELD"
     def command_message(self, command: str, args: tuple[str, ...] = (), user_id: int = 0) -> str:
         broker = self.service.broker
         if command == "autopilot":
@@ -114,12 +146,18 @@ class TelegramPaperController:
                 if self.autopilot.state in {AutopilotState.RISK_LOCKED, AutopilotState.EMERGENCY_STOP}: raise ValueError("Manuelle Sicherheitsprüfung erforderlich.")
                 self.autopilot.transition(AutopilotState.SHADOW); return "Autopilot im sicheren Shadow-Modus fortgesetzt."
             raise ValueError("Unbekannter Autopilot-Befehl.")
-        if command == "morning": return "🌅 Morning Briefing\nMarkt- und Ereignisdaten sind ohne konfigurierte Marktdatenquelle nicht verfügbar. Es werden keine Kurse, Termine oder Nachrichten erfunden."
+        if command == "morning":
+            symbols = self.user_watchlist(user_id) or ("AAPL",)
+            if self.market_data is None:
+                return "🌅 Morning Briefing\nMarkt- und Ereignisdaten sind nicht verfügbar; es werden keine Nachrichten erfunden."
+            return "🌅 Morning Briefing\n\n" + "\n\n".join(self.analysis_message(s, False) for s in symbols)
         if command == "daily": return "📅 Tagesplan\nKeine verifizierten Marktdaten verfügbar. Watchlist: " + (", ".join(self.user_watchlist(user_id)) or "leer")
         if command == "midday": return "🕛 Midday-Update\nKeine verifizierten Änderungen seit Handelsstart verfügbar."
         if command == "close": return "🌙 Tagesrückblick\nPaper-Trades und Regelverstöße werden erst mit persistiertem Journal ausgewertet."
         if command == "upcoming": return "📅 Termine (nächste 7 Tage)\nExterne Earnings-, Wirtschafts- und Fed-Datenquelle ist nicht konfiguriert; es werden keine Ereignisse erfunden."
-        if command == "scan": return "🔎 Scanner\nManuelle Scans benötigen aktuelle abgeschlossene Marktdaten. Ohne Datenquelle keine Kandidaten."
+        if command == "scan":
+            symbols = self.user_watchlist(user_id)
+            return "🔎 Scanner\n" + ("\n\n".join(self.analysis_message(s, False) for s in symbols) if symbols else "Watchlist ist leer.")
         if command == "plan":
             symbol = self.validate_symbol(args[0]) if args else None
             return self.analysis_message(symbol, True) if symbol else "Bitte nutze /plan SYMBOL. Das Symbol konnte nicht gefunden werden."
@@ -169,11 +207,27 @@ def build_application(controller: TelegramPaperController, token: str):
         # Test doubles and older integrations may not accept Telegram kwargs.
         try: await message.reply_text(text, **kwargs)
         except TypeError: await message.reply_text(text)
+    def authorized_only(handler):
+        @wraps(handler)
+        async def wrapped(update, context, *args, **kwargs):
+            query = getattr(update, "callback_query", None)
+            if query is not None:
+                await query.answer()
+            if not is_user_allowed(update, controller.access.allowed):
+                LOG.info("telegram_authorization allowed=false user_suffix=%s", str(getattr(getattr(update, "effective_user", None), "id", ""))[-3:])
+                if query is not None: await query.edit_message_text("⛔ Zugriff verweigert.")
+                elif getattr(update, "effective_message", None): await reply(update.effective_message, "⛔ Zugriff verweigert.")
+                return
+            return await handler(update, context, *args, **kwargs)
+        return wrapped
     async def guarded(update: Update, context: ContextTypes.DEFAULT_TYPE, command: str):
         user, message = update.effective_user, update.effective_message
-        if not user or not controller.authorize(user.id): await reply(message, "Zugriff verweigert."); return
         if command in {"start", "menu"}: await reply(message, "Willkommen. Wähle eine Funktion:", reply_markup=reply_keyboard()); return
         if command == "help": await reply(message, HELP, reply_markup=reply_keyboard()); return
+        if command == "whoami":
+            chat = getattr(update, "effective_chat", None)
+            await reply(message, f"Telegram User ID: {user.id}\nTelegram Chat ID: {getattr(chat, 'id', '–')}\nChat-Typ: {getattr(chat, 'type', '–')}\nAutorisiert: ja")
+            return
         if command == "pause": controller.pause(); await reply(message, "Analyse-Benachrichtigungen pausiert."); return
         if command == "resume": controller.resume(); await reply(message, "Benachrichtigungen fortgesetzt; Orders bleiben bestätigungspflichtig."); return
         if command == "kill": controller.kill(); await reply(message, "Kill Switch aktiviert. Neue Paper-Orders sind gesperrt."); return
@@ -183,9 +237,9 @@ def build_application(controller: TelegramPaperController, token: str):
             kind = {"watchlist":"watchlist", "autopilot":"autopilot", "account":"account", "scan":"scanner"}.get(command)
             await reply(message, text, reply_markup=keyboard(kind) if kind else None)
         except Exception as exc: await reply(message, safe_error(exc))
+    @authorized_only
     async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user, message = update.effective_user, update.effective_message
-        if not user or not controller.authorize(user.id): await reply(message, "Zugriff verweigert."); return
         text = (message.text or "").strip()
         if text in _BUTTON_COMMANDS:
             command = _BUTTON_COMMANDS[text]
@@ -202,9 +256,9 @@ def build_application(controller: TelegramPaperController, token: str):
             await reply(message, controller.analysis_message(symbol, controller.store.view_mode(user.id) != "compact" if controller.store else True), reply_markup=keyboard("analysis", symbol)); return
         symbol = controller.validate_symbol(text)
         if symbol: await reply(message, controller.analysis_message(symbol, True), reply_markup=keyboard("analysis", symbol))
+    @authorized_only
     async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-        query = update.callback_query; await query.answer()
-        if not query.from_user or not controller.authorize(query.from_user.id): await query.edit_message_text("Zugriff verweigert."); return
+        query = update.callback_query
         data = query.data or ""; user_id = query.from_user.id
         try:
             if data == "menu": await query.message.reply_text("Hauptmenü:", reply_markup=reply_keyboard()); return
@@ -235,6 +289,7 @@ def build_application(controller: TelegramPaperController, token: str):
         except Exception as exc: await query.edit_message_text(safe_error(exc))
     app = Application.builder().token(token).build()
     for command in COMMANDS:
+        @authorized_only
         async def handler(update, context, registered_command=command): await guarded(update, context, registered_command)
         app.add_handler(CommandHandler(command, handler))
     app.add_handler(CallbackQueryHandler(callback)); app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_handler)); return app

@@ -46,14 +46,30 @@ def command_handler(app, command):
     return next(handler for handler in app.handlers[0] if command in getattr(handler, "commands", set()))
 
 
-@pytest.mark.parametrize("button", list(_BUTTON_COMMANDS))
-def test_reply_keyboard_button_uses_real_message_handler_without_context_args(button):
+@pytest.mark.parametrize(("button", "expected"), [
+    ("📊 Analyse", "Welches Symbol möchtest du analysieren?"),
+    ("🔎 Scanner", "🔎 Scanner"),
+    ("⭐ Watchlist", "Watchlist:"),
+    ("🌅 Morning", "🌅 Morning Briefing"),
+    ("💼 Konto", "Paper-Konto"),
+    ("📈 Positionen", "Offene Positionen:"),
+    ("🧾 Orders", "Orders:"),
+    ("⚙️ Risiko", "Risikolimits"),
+    ("🤖 Autopilot", "Autopilot:"),
+    ("📔 Journal", "📔 Journal"),
+    ("📅 Termine", "📅 Termine"),
+    ("⚙️ Einstellungen", "⚙️ Einstellungen"),
+    ("🔄 Aktualisieren", "Paper-Konto"),
+    ("❓ Hilfe", "Trading-App"),
+])
+def test_reply_keyboard_button_uses_real_message_handler_without_context_args(button, expected):
     app = build_application(make_controller(), "123456:abcdefghijklmnopqrstuv")
     message = Message(button)
     update = SimpleNamespace(effective_user=SimpleNamespace(id=7), effective_message=message, callback_query=None)
     asyncio.run(message_handler(app).callback(update, SimpleNamespace(args=None)))
     assert message.replies
-    assert not any("Die Anfrage konnte nicht verarbeitet" in reply for reply in message.replies)
+    assert expected in message.replies[-1]
+    assert not any("⚠️ Die Funktion konnte nicht ausgeführt werden." in reply for reply in message.replies)
 
 
 def test_slash_handlers_support_empty_and_populated_arguments():

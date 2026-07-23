@@ -5,19 +5,21 @@ import re
 from decimal import Decimal
 from backtester.broker.base import OrderRequest
 from backtester.execution import PaperOrderService
+from backtester.autopilot import Autopilot, AutopilotState
 from backtester.http_headers import validate_header_values
 from .auth import AccessControl
 from .confirmation import OrderConfirmations
 from .formatting import safe_error
 
-COMMANDS = ("start", "help", "status", "signals", "positions", "orders", "account", "risk", "pause", "resume", "kill", "watchlist")
+COMMANDS = ("start", "help", "status", "signals", "positions", "orders", "account", "risk", "pause", "resume", "kill", "watchlist", "autopilot", "profit", "performance", "trades", "morning", "close")
 HELP = "Verfügbar: " + ", ".join("/" + c for c in COMMANDS) + "\n⚠️ PAPER TRADING – KEIN ECHTGELD"
 _SYMBOL = re.compile(r"^[A-Z][A-Z0-9.\-]{0,14}$")
 
 class TelegramPaperController:
-    def __init__(self, service: PaperOrderService, allowed_ids: frozenset[int], watchlist: tuple[str, ...] = ()):
+    def __init__(self, service: PaperOrderService, allowed_ids: frozenset[int], watchlist: tuple[str, ...] = (), autopilot: Autopilot|None = None):
         self.service=service; self.access=AccessControl(allowed_ids); self.confirmations=OrderConfirmations(); self._prices: dict[str, Decimal] = {}; self.paused=False
         self.watchlist = self._validate_watchlist(watchlist)
+        self.autopilot = autopilot or Autopilot(service)
     def authorize(self, user_id: int) -> bool: return self.access.allowed_now(user_id)
     def kill(self) -> None: self.service.risk.kill_switch=True
     def pause(self) -> None: self.paused=True
@@ -48,6 +50,22 @@ class TelegramPaperController:
         submit, cancel, or otherwise alter an order.
         """
         broker = self.service.broker
+        if command == "autopilot":
+            action = args[0].lower() if args else "status"
+            if action in {"status", "report", "config"}: return self.autopilot.status()
+            if action == "start": return self.autopilot.start()
+            if action == "stop": self.autopilot.transition(AutopilotState.PAUSED); return "Neue Einstiege gestoppt; bestehende Schutzpläne bleiben aktiv."
+            if action == "pause": self.autopilot.transition(AutopilotState.PAUSED); return "Autopilot pausiert; keine neuen Trades."
+            if action == "resume":
+                if self.autopilot.state in {AutopilotState.RISK_LOCKED, AutopilotState.EMERGENCY_STOP}: raise ValueError("Manuelle Sicherheitsprüfung nach Risk Lock/Kill Switch erforderlich.")
+                self.autopilot.transition(AutopilotState.SHADOW); return "Autopilot im sicheren Shadow-Modus fortgesetzt."
+            if action == "shadow": self.autopilot.transition(AutopilotState.SHADOW); return "Shadow-Modus aktiv: keine Alpaca-Order wird gesendet."
+            if action == "paper": self.autopilot.transition(AutopilotState.PAPER_ACTIVE); return "Ausschließlich Alpaca-Paper-Modus aktiviert."
+            if action == "emergency":
+                self.autopilot.emergency(); return "Kill Switch aktiv. Neue Orders gesperrt. Offene Positionen werden nicht automatisch ohne explizite Schließbestätigung geschlossen."
+            raise ValueError("Unbekannter Autopilot-Befehl.")
+        if command in {"profit", "performance", "trades", "morning", "close"}:
+            return self.autopilot.status() + "\nTagesbericht: Noch keine vollständig berechneten Paper-Trades."
         if command == "status":
             state = "pausiert" if self.paused else "aktiv"
             kill = "aktiv" if self.service.risk.kill_switch else "inaktiv"

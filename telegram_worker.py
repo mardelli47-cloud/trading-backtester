@@ -13,6 +13,9 @@ from backtester.telegram.logging import configure_worker_logging
 from backtester.market_data import MarketDataService
 from backtester.autopilot import Autopilot
 from backtester.autopilot_runner import AutopilotRunner
+from backtester.crypto_autopilot import CryptoAutopilot
+from backtester.crypto_autopilot_runner import CryptoAutopilotRunner
+from backtester.market_data import CryptoMarketDataService
 
 LOG = logging.getLogger(__name__)
 
@@ -28,6 +31,9 @@ def main() -> None:
     service = PaperOrderService(broker, RiskManager(RiskSettings(), account.equity), paper_enabled=False)
     autopilot = Autopilot(service)
     runner = AutopilotRunner(autopilot, market_data)
-    controller=TelegramPaperController(service, settings.allowed_user_ids, autopilot=autopilot, autopilot_runner=runner, store=UserStore(), market_data=market_data)
+    crypto_data=CryptoMarketDataService(settings.alpaca_api_key, settings.alpaca_secret_key, trading_client=broker.client)
+    crypto=CryptoAutopilot(broker); crypto.set_assets(crypto_data.crypto_assets())
+    crypto_runner=CryptoAutopilotRunner(crypto, crypto_data)
+    controller=TelegramPaperController(service, settings.allowed_user_ids, autopilot=autopilot, autopilot_runner=runner, crypto_autopilot=crypto, crypto_runner=crypto_runner, store=UserStore(), market_data=market_data)
     run_worker(controller, settings.token, settings.webhook_url, settings.webhook_secret, args.local_polling)
 if __name__ == "__main__": main()

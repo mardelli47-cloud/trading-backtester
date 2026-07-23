@@ -1,7 +1,7 @@
 """Telegram menus with short, stable callback data."""
 from __future__ import annotations
 
-MAIN_MENU = (("📊 Analyse", "🔎 Scanner"), ("⭐ Watchlist", "🌅 Morning"), ("💼 Konto", "📈 Positionen"), ("🧾 Orders", "⚙️ Risiko"), ("🤖 Autopilot", "📔 Journal"), ("📅 Termine", "⚙️ Einstellungen"), ("🔄 Aktualisieren", "❓ Hilfe"))
+MAIN_MENU = (("📊 Analyse", "🔎 Scanner"), ("⭐ Watchlist", "🌅 Morning"), ("💼 Konto", "📈 Positionen"), ("🧾 Orders", "⚙️ Risiko"), ("🤖 Autopilot", "₿ Krypto-Pilot"), ("📔 Journal", "📅 Termine", "⚙️ Einstellungen"), ("🔄 Aktualisieren", "❓ Hilfe"))
 
 def reply_keyboard():
     from telegram import ReplyKeyboardMarkup

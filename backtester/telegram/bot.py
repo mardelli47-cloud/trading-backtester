@@ -18,6 +18,7 @@ from backtester.broker.base import OrderRequest
 from backtester.execution import PaperOrderService
 from backtester.http_headers import validate_header_values
 from backtester.market_data import MarketDataError, MarketDataService
+from backtester.instruments import InstrumentResolver, ProviderRouter, YFinanceProvider, TwelveDataProvider, CATALOG
 from .auth import AccessControl
 from .confirmation import OrderConfirmations
 from .formatting import safe_error
@@ -26,7 +27,7 @@ from .ui import keyboard, reply_keyboard
 
 COMMANDS = ("start", "menu", "help", "morning", "daily", "midday", "close", "scan", "plan", "upcoming", "account", "positions", "orders", "risk", "signals", "watchlist", "autopilot", "pause", "resume", "kill", "journal", "performance", "compact", "detailed", "buy", "sell", "status", "profit", "trades", "whoami")
 HELP = "Trading-App (nur Alpaca Paper Trading): Nutze das Menü oder /help. Keine Gewinnzusage; Signale verwenden nur abgeschlossene Kerzen."
-_SYMBOL = re.compile(r"^[A-Z][A-Z0-9.\-]{0,9}$")
+_SYMBOL = re.compile(r"^[A-Z^][A-Z0-9.=\-/^]{0,9}$")
 _BUTTON_COMMANDS = {"📊 Analyse": "analyse", "🔎 Scanner": "scan", "⭐ Watchlist": "watchlist", "🌅 Morning": "morning", "💼 Konto": "account", "📈 Positionen": "positions", "🧾 Orders": "orders", "⚙️ Risiko": "risk", "🤖 Autopilot": "autopilot", "📔 Journal": "journal", "📅 Termine": "upcoming", "⚙️ Einstellungen": "settings", "🔄 Aktualisieren": "account", "❓ Hilfe": "help"}
 LOG = logging.getLogger(__name__)
 
@@ -44,10 +45,11 @@ class Dialog:
 
 
 class TelegramPaperController:
-    def __init__(self, service: PaperOrderService, allowed_ids: frozenset[int], watchlist: tuple[str, ...] = (), autopilot: Autopilot | None = None, store: UserStore | None = None, market_data: MarketDataService | None = None):
+    def __init__(self, service: PaperOrderService, allowed_ids: frozenset[int], watchlist: tuple[str, ...] = (), autopilot: Autopilot | None = None, store: UserStore | None = None, market_data: MarketDataService | None = None, provider_router: ProviderRouter | None = None):
         self.service, self.access, self.confirmations = service, AccessControl(allowed_ids), OrderConfirmations()
         self._prices: dict[str, Decimal] = {}; self.paused = False; self.autopilot = autopilot or Autopilot(service)
         self.store = store; self.watchlist = self._validate_watchlist(watchlist); self.dialogs: dict[int, Dialog] = {}; self.market_data = market_data
+        self.resolver = InstrumentResolver(); self.provider_router = provider_router or ProviderRouter(alpaca_stock=market_data, global_provider=TwelveDataProvider(), yfinance_provider=YFinanceProvider())
     def authorize(self, user_id: int) -> bool: return self.access.allowed_now(user_id)
     def kill(self) -> None: self.service.risk.kill_switch = True
     def pause(self) -> None: self.paused = True
@@ -55,10 +57,19 @@ class TelegramPaperController:
     @staticmethod
     def normalize_symbol(text: str) -> str | None:
         value = text.strip().upper()
+        if value == "EURUSD": value = "EUR/USD"
         return value if _SYMBOL.fullmatch(value) else None
+    def resolve_instrument(self, text: str):
+        return self.resolver.resolve(text)
+    def instrument_choices(self, text: str):
+        return self.resolver.search(text)
+    def is_analysis_only(self, symbol: str) -> bool:
+        return any(item.canonical_symbol == symbol or item.provider_symbol == symbol for item in CATALOG.values())
     def validate_symbol(self, text: str) -> str | None:
         symbol = self.normalize_symbol(text)
         if not symbol: return None
+        instrument = self.resolver.resolve(symbol)
+        if instrument: return instrument.canonical_symbol
         # Alpaca validation when supported by the configured adapter.  Mock and
         # legacy adapters retain regex validation for deterministic tests.
         if self.market_data is not None:
@@ -92,6 +103,7 @@ class TelegramPaperController:
         else: self.watchlist = ()
     def propose(self, user_id: int, request: OrderRequest, price: Decimal) -> str:
         if not self.authorize(user_id): raise PermissionError("Nicht autorisiert.")
+        if self.is_analysis_only(request.symbol): raise ValueError("Nur Analyse – nicht über Alpaca Paper handelbar.")
         if self.paused or self.service.risk.kill_switch: raise ValueError("Neue Orders sind gestoppt.")
         token = self.confirmations.create(request, price, user_id); self._prices[token] = price; return token
     def confirm(self, user_id: int, token: str):
@@ -107,6 +119,9 @@ class TelegramPaperController:
         if any(not _SYMBOL.fullmatch(s) for s in cleaned): raise ValueError("Watchlist enthält ein ungültiges Symbol.")
         return cleaned
     def analysis_message(self, symbol: str, detailed: bool = True) -> str:
+        instrument = self.resolver.resolve(symbol)
+        if instrument:
+            return self.international_analysis_message(instrument, detailed)
         heading = f"📊 Analyse: {symbol}\n"
         if self.market_data is None:
             return heading + "Marktdaten sind in diesem Worker derzeit nicht verfügbar; daher werden weder Kurs noch Score erfunden.\nFazit: Aktuell kein Trade ohne aktuelle, abgeschlossene Kurskerzen.\n⚠️ PAPER TRADING – KEIN ECHTGELD"
@@ -133,6 +148,23 @@ class TelegramPaperController:
                     + f"ATR (14T): ${atr:.2f}\nUnterstützung: ${support:.2f}\nWiderstand: ${resistance:.2f}\nSetup-Score: {score}/100\nEinstiegstrigger: ${trigger:.2f}\nStop: ${stop:.2f}\nZiel: ${target:.2f}{intraday_note}\nFazit: Nur nach bestätigtem Signal aus abgeschlossenen Kerzen handeln.\n⚠️ PAPER TRADING – KEIN ECHTGELD")
         except MarketDataError as exc:
             return heading + f"Marktdaten konnten nicht geladen werden: {exc}\nEs werden keine Werte erfunden.\n⚠️ PAPER TRADING – KEIN ECHTGELD"
+    def international_analysis_message(self, instrument, detailed: bool = True) -> str:
+        provider = self.provider_router.provider_for(instrument)
+        heading = f"📊 Analyse: {instrument.name} – {instrument.exchange} – {instrument.display_symbol}\n"
+        if provider is None:
+            return heading + "Globaler Marktdatenprovider nicht konfiguriert und yfinance-Fallback deaktiviert.\nNur Analyse – nicht über Alpaca Paper handelbar."
+        try:
+            daily = provider.get_daily_bars(instrument, 101)
+            close, high, low = daily.bars["close"].astype(float), daily.bars["high"].astype(float), daily.bars["low"].astype(float)
+            price=float(close.iloc[-1]); trend="aufwärts" if price >= close.tail(20).mean() else "abwärts"; momentum=(price/close.iloc[-10]-1)*100 if len(close)>=10 else 0
+            support,resistance=float(low.tail(20).min()),float(high.tail(20).max()); atr=float((high-low).tail(14).mean())
+            score=max(0,min(100,round(50+(15 if trend == "aufwärts" else -15)+momentum*3))) if len(close)>=30 else 0
+            delay="verzögert" if daily.delayed else "Echtzeit"; quality="hoch" if len(close)>=100 else "mittel" if len(close)>=30 else "niedrig"
+            subtype_note="📊 Future-Referenz – kein Spotpreis und kein direktes Alpaca-Paper-Instrument.\n" if instrument.asset_class == "future_reference" else ""
+            index_note="Ein Index ist ein Analyseinstrument. Er wird nicht direkt als Alpaca-Paper-Order gehandelt.\n" if instrument.asset_class == "index" else ""
+            return heading + f"Markt: {instrument.exchange} | {instrument.currency} | {instrument.timezone}\nDatenquelle: {daily.provider} | Datenzeitpunkt: {daily.timestamp.isoformat()} | {delay}\nKurs: {price:.4f} | Trend: {trend} | Momentum: {momentum:+.2f}%\nATR: {atr:.4f} | Unterstützung: {support:.4f} | Widerstand: {resistance:.4f}\nSetup-Score: {score}/100 (keine Gewinnwahrscheinlichkeit)\nTrigger: {resistance*1.001:.4f} | Stop: {support:.4f} | Ziel: {resistance+2*atr:.4f}\nDatenqualität: {quality}\n{subtype_note}{index_note}analysis_only=true | Paper-handelbar: nein\nNur Analyse – nicht über Alpaca Paper handelbar."
+        except Exception as exc:
+            return heading + f"Marktdaten konnten nicht geladen werden: {exc}\nEs werden keine Werte erfunden.\nNur Analyse – nicht über Alpaca Paper handelbar."
     def command_message(self, command: str, args: tuple[str, ...] = (), user_id: int = 0) -> str:
         broker = self.service.broker
         if command == "autopilot":
@@ -253,9 +285,9 @@ def build_application(controller: TelegramPaperController, token: str):
             action, symbol = consumed
             if not symbol: await reply(message, "Das Symbol konnte nicht gefunden werden."); return
             if action == "watchlist_add": controller.add_watchlist(user.id, symbol); await reply(message, f"{symbol} zur Watchlist hinzugefügt.", reply_markup=keyboard("watchlist")); return
-            await reply(message, controller.analysis_message(symbol, controller.store.view_mode(user.id) != "compact" if controller.store else True), reply_markup=keyboard("analysis", symbol)); return
+            await reply(message, controller.analysis_message(symbol, controller.store.view_mode(user.id) != "compact" if controller.store else True), reply_markup=keyboard("analysis", symbol, controller.is_analysis_only(symbol))); return
         symbol = controller.validate_symbol(text)
-        if symbol: await reply(message, controller.analysis_message(symbol, True), reply_markup=keyboard("analysis", symbol))
+        if symbol: await reply(message, controller.analysis_message(symbol, True), reply_markup=keyboard("analysis", symbol, controller.is_analysis_only(symbol)))
     @authorized_only
     async def callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         query = update.callback_query
@@ -271,7 +303,7 @@ def build_application(controller: TelegramPaperController, token: str):
             if action == "an":
                 if value == "custom": controller.begin_dialog(user_id, "analyse"); await query.edit_message_text("Bitte gib ein Börsensymbol ein."); return
                 symbol = controller.validate_symbol(value)
-                await query.edit_message_text(controller.analysis_message(symbol, True), reply_markup=keyboard("analysis", symbol)) if symbol else await query.edit_message_text("Das Symbol konnte nicht gefunden werden."); return
+                await query.edit_message_text(controller.analysis_message(symbol, True), reply_markup=keyboard("analysis", symbol, controller.is_analysis_only(symbol))) if symbol else await query.edit_message_text("Das Symbol konnte nicht gefunden werden."); return
             if action == "wa":
                 if value == "add": controller.begin_dialog(user_id, "watchlist_add"); await query.edit_message_text("Bitte gib ein Börsensymbol ein."); return
                 if value == "clear": controller.clear_watchlist(user_id); await query.edit_message_text("Watchlist geleert.", reply_markup=keyboard("watchlist")); return

@@ -216,3 +216,42 @@ jeweiligen Daten des Paper-Brokers bzw. die aktiven Risikolimits aus. `/signals`
 zeigt nur Signale aus abgeschlossenen Balken an. Mit `/watchlist AAPL,MSFT` wird
 die Watchlist für die Signalanzeige gesetzt; ohne Argument zeigt der Befehl die
 aktuelle Watchlist an.
+
+## Internationale Telegram-Analyse
+
+Der Telegram-Worker trennt **Datenanbieter** und **Handelsanbieter**. US-Aktien/ETFs
+bleiben bei Alpaca Market Data, Kryptowerte bleiben bei Alpaca Crypto. Für deutsche,
+europäische und sonstige internationale Aktien, Forex, Indizes und Rohstoffreferenzen
+ist [Twelve Data](https://twelvedata.com/) der einzige primäre offizielle Anbieter:
+`TWELVE_DATA_API_KEY` wird ausschließlich über die Umgebung gelesen. Die dokumentierte
+Symbolsuche und Time-Series-API erlauben eine explizite Symbolauflösung ohne eine
+Notierung stillschweigend zu ersetzen.
+
+Optional kann `ENABLE_YFINANCE_FALLBACK=true` gesetzt werden. Der Fallback ist
+analyse-only, gecacht und mit Timeout versehen; Yahoo/yfinance kann verzögert sein oder
+Datenlücken aufweisen und wird nie als Alpaca-Orderpreis verwendet. Ohne Provider-Key
+läuft der Bot weiter und meldet verständlich, dass der globale Anbieter deaktiviert ist.
+Weitere Einstellungen sind `MARKET_DATA_CACHE_TTL_SECONDS`,
+`INSTRUMENT_SEARCH_CACHE_TTL_SECONDS`, `PROVIDER_REQUEST_TIMEOUT_SECONDS` und
+`PROVIDER_MAX_RETRIES`.
+
+Beispiele: `IFX.DE` ist **Infineon AG – Xetra – EUR**, während `IFNNY` eine eigene
+OTC/ADR-Notierung bleibt; weder wird durch die andere ersetzt. `/plan IFX.DE`,
+`/watchlist add EUR/USD`, `/watchlist add DAX` und `/watchlist add GOLD` verwenden
+kanonische Instrumente. Unterstützte Referenzwerte umfassen DAX, Euro Stoxx 50, FTSE
+100, CAC 40, EUR/USD, GBP/USD, USD/JPY sowie Gold/Silber/WTI/Brent-Future-Referenzen.
+
+Diese Instrumente tragen stets `analysis_only=true` und `paper_tradable=false`.
+Telegram zeigt deshalb keine Paper-Buy/Sell-Schaltflächen und blockiert einen
+Orderversuch technisch. Indizes sind Analyseinstrumente; Future-Referenzen sind weder
+Spotpreise noch direkt handelbare Alpaca-Paper-Instrumente. Compact- und Detailed-
+Ausgaben zeigen Anbieter, Zeitstempel, Währung, Zeitzone, Verzögerung und
+Datenqualität. Bei fehlenden Intraday-Daten bleibt die Tagesanalyse verfügbar; bei
+veralteten oder unzureichenden Daten wird keine Empfehlung erfunden. Bei Rate Limits
+werden nur noch gültige Cache-Ergebnisse als solche verwendet.
+
+**Render:** Setzen Sie `TWELVE_DATA_API_KEY` und optional
+`ENABLE_YFINANCE_FALLBACK=true` im Render Secret Store, nicht in Dateien oder Logs.
+Deployen Sie anschließend den bestehenden Web Service/Worker neu und prüfen Sie
+`/plan IFX.DE`, `/plan EUR/USD` sowie `/watchlist add DAX`. Provider-Keys, Nutzer- und
+Kontodaten werden weder im Health-Status noch in Telegram-Fehlern ausgegeben.

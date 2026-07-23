@@ -12,7 +12,7 @@ def keyboard(kind: str, symbol: str = "", analysis_only: bool = False):
     sets = {
         "analysis": (("⭐ Watchlist hinzufügen", f"wa:{symbol}"), ("📋 Handelsplan", f"pl:{symbol}"), ("🔄 Aktualisieren", f"an:{symbol}"), ("📈 Paper Buy", f"ob:{symbol}"), ("📉 Paper Sell", f"os:{symbol}"), ("◀️ Hauptmenü", "menu")),
         "watchlist": (("➕ Hinzufügen", "wa:add"), ("➖ Entfernen", "wa:remove"), ("🔎 Watchlist scannen", "sc:watch"), ("🗑 Leeren", "wa:clear"), ("◀️ Hauptmenü", "menu")),
-        "autopilot": (("🟢 Aktivieren", "ap:on"), ("🔴 Deaktivieren", "ap:off"), ("⏸ Pausieren", "ap:pause"), ("▶️ Fortsetzen", "ap:resume"), ("⚙️ Einstellungen", "settings"), ("📊 Status", "ap:status"), ("◀️ Hauptmenü", "menu")),
+        "autopilot": (("📊 Status", "ap:status"), ("▶️ Shadow starten", "ap:on"), ("🔎 Jetzt scannen", "ap:scan"), ("📋 Letzte Prüfung", "ap:last"), ("🧪 Shadow-Trades", "ap:shadow"), ("🟢 Paper aktivieren", "ap:paper"), ("⏸ Pausieren", "ap:pause"), ("🔴 Deaktivieren", "ap:off"), ("🛑 Kill Switch", "ap:kill"), ("◀️ Hauptmenü", "menu")),
         "account": (("📈 Positionen", "cmd:positions"), ("🧾 Orders", "cmd:orders"), ("📊 Tages-P&L", "cmd:performance"), ("⚙️ Risiko", "cmd:risk"), ("🔄 Aktualisieren", "cmd:account")),
         "scanner": (("🔥 Top Setups", "sc:top"), ("📈 Long Setups", "sc:long"), ("📉 Short Setups", "sc:short"), ("🚀 Breakouts", "sc:breakout"), ("↩️ Pullbacks", "sc:pullback"), ("⚡ Momentum", "sc:momentum"), ("⭐ Watchlist Scan", "sc:watch"), ("◀️ Hauptmenü", "menu")),
     }

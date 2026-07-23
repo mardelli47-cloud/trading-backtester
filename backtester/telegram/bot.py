@@ -269,7 +269,10 @@ def build_application(controller: TelegramPaperController, token: str):
         if command == "kill": controller.kill(); await reply(message, "Kill Switch aktiviert. Neue Paper-Orders sind gesperrt."); return
         if command == "buy" or command == "sell": await reply(message, "Paper-Order-Workflow: wähle zuerst ein Symbol in einer Analyse; jede Order benötigt zwei Bestätigungen."); return
         try:
-            text = controller.command_message(command, tuple(args), user.id)
+            # MessageHandler updates do not populate ``context.args``.  Keep
+            # this boundary defensive as well, so every caller can pass None
+            # without turning a reply-keyboard action into a TypeError.
+            text = controller.command_message(command, tuple(args or ()), user.id)
             kind = {"watchlist":"watchlist", "autopilot":"autopilot", "account":"account", "scan":"scanner"}.get(command)
             await reply(message, text, reply_markup=keyboard(kind) if kind else None)
         except Exception as exc:

@@ -25,10 +25,10 @@ from .formatting import error_id, safe_error
 from .storage import UserStore
 from .ui import keyboard, reply_keyboard
 
-COMMANDS = ("start", "menu", "help", "morning", "daily", "midday", "close", "scan", "plan", "upcoming", "account", "positions", "orders", "risk", "signals", "watchlist", "autopilot", "pause", "resume", "kill", "journal", "performance", "compact", "detailed", "settings", "buy", "sell", "status", "profit", "trades", "whoami")
+COMMANDS = ("start", "menu", "help", "morning", "daily", "midday", "close", "scan", "plan", "upcoming", "account", "positions", "orders", "risk", "signals", "watchlist", "autopilot", "cryptoauto", "pause", "resume", "kill", "journal", "performance", "compact", "detailed", "settings", "buy", "sell", "status", "profit", "trades", "whoami")
 HELP = "Trading-App (nur Alpaca Paper Trading): Nutze das Menü oder /help. Keine Gewinnzusage; Signale verwenden nur abgeschlossene Kerzen."
 _SYMBOL = re.compile(r"^[A-Z^][A-Z0-9.=\-/^]{0,9}$")
-_BUTTON_COMMANDS = {"📊 Analyse": "analyse", "🔎 Scanner": "scan", "⭐ Watchlist": "watchlist", "🌅 Morning": "morning", "💼 Konto": "account", "📈 Positionen": "positions", "🧾 Orders": "orders", "⚙️ Risiko": "risk", "🤖 Autopilot": "autopilot", "📔 Journal": "journal", "📅 Termine": "upcoming", "⚙️ Einstellungen": "settings", "🔄 Aktualisieren": "account", "❓ Hilfe": "help"}
+_BUTTON_COMMANDS = {"📊 Analyse": "analyse", "🔎 Scanner": "scan", "⭐ Watchlist": "watchlist", "🌅 Morning": "morning", "💼 Konto": "account", "📈 Positionen": "positions", "🧾 Orders": "orders", "⚙️ Risiko": "risk", "🤖 Autopilot": "autopilot", "₿ Krypto-Pilot": "cryptoauto", "📔 Journal": "journal", "📅 Termine": "upcoming", "⚙️ Einstellungen": "settings", "🔄 Aktualisieren": "account", "❓ Hilfe": "help"}
 LOG = logging.getLogger(__name__)
 
 def is_user_allowed(update, allowed_ids: frozenset[int]) -> bool:
@@ -45,11 +45,12 @@ class Dialog:
 
 
 class TelegramPaperController:
-    def __init__(self, service: PaperOrderService, allowed_ids: frozenset[int], watchlist: tuple[str, ...] = (), autopilot: Autopilot | None = None, store: UserStore | None = None, market_data: MarketDataService | None = None, provider_router: ProviderRouter | None = None, autopilot_runner=None):
+    def __init__(self, service: PaperOrderService, allowed_ids: frozenset[int], watchlist: tuple[str, ...] = (), autopilot: Autopilot | None = None, store: UserStore | None = None, market_data: MarketDataService | None = None, provider_router: ProviderRouter | None = None, autopilot_runner=None, crypto_autopilot=None, crypto_runner=None):
         self.service, self.access, self.confirmations = service, AccessControl(allowed_ids), OrderConfirmations()
         self._prices: dict[str, Decimal] = {}; self.paused = False; self.autopilot = autopilot or Autopilot(service)
         self.store = store; self.watchlist = self._validate_watchlist(watchlist); self.dialogs: dict[int, Dialog] = {}; self.market_data = market_data
         self.autopilot_runner = autopilot_runner; self.resolver = InstrumentResolver(); self.provider_router = provider_router or ProviderRouter(alpaca_stock=market_data, global_provider=TwelveDataProvider(), yfinance_provider=YFinanceProvider())
+        self.crypto_autopilot, self.crypto_runner = crypto_autopilot, crypto_runner
     def authorize(self, user_id: int) -> bool: return self.access.allowed_now(user_id)
     def kill(self) -> None: self.service.risk.kill_switch = True
     def pause(self) -> None: self.paused = True
@@ -167,6 +168,21 @@ class TelegramPaperController:
             return heading + f"Marktdaten konnten nicht geladen werden: {exc}\nEs werden keine Werte erfunden.\nNur Analyse – nicht über Alpaca Paper handelbar."
     def command_message(self, command: str, args: tuple[str, ...] = (), user_id: int = 0) -> str:
         broker = self.service.broker
+        if command == "cryptoauto":
+            if not self.crypto_autopilot: raise ValueError("Krypto-Pilot ist nicht konfiguriert.")
+            action=args[0].lower() if args else "status"; c=self.crypto_autopilot
+            if action in {"status","last","performance","shadow"}: return c.status() + ("\n"+self.crypto_runner.status() if self.crypto_runner else "")
+            if action in {"start","shadow"}: return c.start()
+            if action == "scan":
+                if not self.crypto_runner: raise ValueError("Krypto-Runner fehlt.")
+                r=self.crypto_runner.run_cycle(); return f"₿ Krypto-Scan abgeschlossen\nGeprüft: {len(r['checked'])}\nSetups: {len(r['accepted'])}\nAbgelehnt: {len(r['rejected'])}"
+            if action == "paper": return c.activate_paper()
+            if action == "pause": c.state=type(c.state).PAUSED
+            elif action in {"stop","off"}: c.state=type(c.state).DISABLED
+            elif action == "kill": c.state=type(c.state).EMERGENCY_STOP
+            elif action == "resume": c.state=type(c.state).SHADOW
+            else: raise ValueError("Unbekannter Krypto-Pilot-Befehl.")
+            c.save(); return c.status()
         if command == "autopilot":
             action = args[0].lower() if args else "status"
             if action in {"status", "report", "config"}:
@@ -341,8 +357,10 @@ def build_application(controller: TelegramPaperController, token: str):
             await query.edit_message_text(safe_error(exc, incident_id))
     async def _post_init(application):
         if controller.autopilot_runner: await controller.autopilot_runner.start()
+        if controller.crypto_runner: await controller.crypto_runner.start()
     async def _post_shutdown(application):
         if controller.autopilot_runner: await controller.autopilot_runner.stop()
+        if controller.crypto_runner: await controller.crypto_runner.stop()
     app = Application.builder().token(token).post_init(_post_init).post_shutdown(_post_shutdown).build()
     for command in COMMANDS:
         @authorized_only

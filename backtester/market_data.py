@@ -124,3 +124,35 @@ class MarketDataService:
             return "ok"
         except Exception:
             return "error"
+
+
+class CryptoMarketDataService:
+    """Read-only official Alpaca crypto client; deliberately no stock fallback."""
+    def __init__(self, api_key=None, secret_key=None, data_client=None, trading_client=None):
+        self.api_key=api_key or os.getenv("ALPACA_API_KEY", ""); self.secret_key=secret_key or os.getenv("ALPACA_SECRET_KEY", "")
+        if not self.api_key or not self.secret_key: raise ValueError("Alpaca API-Schlüssel fehlen.")
+        if data_client is None:
+            from alpaca.data.historical import CryptoHistoricalDataClient
+            data_client=CryptoHistoricalDataClient(self.api_key, self.secret_key)
+        if trading_client is None:
+            from alpaca.trading.client import TradingClient
+            trading_client=TradingClient(self.api_key,self.secret_key,paper=True)
+        self.client,self.trading_client=data_client,trading_client
+    def latest_quote(self,symbol):
+        from alpaca.data.requests import CryptoLatestQuoteRequest
+        return self.client.get_crypto_latest_quote(CryptoLatestQuoteRequest(symbol_or_symbols=symbol))[symbol]
+    def snapshot(self,symbol):
+        from alpaca.data.requests import CryptoBarsRequest
+        from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
+        from backtester.crypto_autopilot import CryptoMarketSnapshot
+        bars=self.client.get_crypto_bars(CryptoBarsRequest(symbol_or_symbols=symbol,timeframe=TimeFrame(15,TimeFrameUnit.Minute),start=datetime.now(timezone.utc)-timedelta(days=2),limit=110)).df
+        if isinstance(bars.index,pd.MultiIndex): bars=bars.reset_index(level=0,drop=True)
+        bars=bars.sort_index(); now=datetime.now(timezone.utc); bars=bars[pd.to_datetime(bars.index,utc=True)+pd.Timedelta(minutes=15)<=now]
+        if len(bars)<100: raise MarketDataError("Weniger als 100 abgeschlossene 15-Minuten-Kerzen.")
+        q=self.latest_quote(symbol); b=bars.iloc[-1]; idx=pd.to_datetime(bars.index[-1],utc=True).to_pydatetime(); close=Decimal(str(b.close)); atr=Decimal(str((bars.high-bars.low).tail(14).mean())); vwap=Decimal(str(getattr(b,"vwap",close)))
+        resistance=Decimal(str(bars.high.iloc[-21:-1].max())); low=Decimal(str(b.low)); vol=bars.volume; rel=Decimal(str(vol.iloc[-1]/vol.tail(20).mean())) if vol.tail(20).mean() else Decimal("0")
+        return CryptoMarketSnapshot(symbol,idx,close,Decimal(str(q.bid_price)),Decimal(str(q.ask_price)),atr,Decimal(str(b.volume)),rel,vwap,close>=Decimal(str(bars.close.tail(60).mean())),close>=Decimal(str(bars.close.iloc[-10])),close>resistance and close>=vwap,low<=vwap and close>=vwap,True,f"{symbol}:{idx.isoformat()}")
+    def account_limits(self):
+        a=self.trading_client.get_account(); return Decimal(str(a.equity)),Decimal(str(a.buying_power)),Decimal("0")
+    def crypto_assets(self):
+        return self.trading_client.get_all_assets()

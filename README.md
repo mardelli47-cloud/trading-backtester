@@ -109,6 +109,22 @@ Positionsgröße ist `Kontowert × 0,25 % / (Einstieg − Stop)` und zusätzlich
 pro Tag begrenzt. Die zustands- und trade-plan-Persistenz liegt standardmäßig in
 `autopilot_state.json` und sollte im Deployment auf dauerhaftem Storage liegen.
 
+### Krypto-Pilot (Alpaca Paper, long-only)
+
+`/cryptoauto start` benötigt zwei Bestätigungen und eröffnet ausschließlich virtuelle
+Shadow-Trades. `/cryptoauto scan` führt genau einen Scan mit dem offiziellen
+`CryptoHistoricalDataClient` aus; Krypto wird dabei nie durch US-Börsenzeiten
+blockiert. Paper-Aktivierung (`/cryptoauto paper`, ebenfalls zwei Bestätigungen)
+erfordert mindestens `CRYPTO_AUTOPILOT_MIN_SHADOW_TRADES` geschlossene Shadow-Trades
+und `ALPACA_PAPER=true`. Es werden keine Wallets, Live-Clients, Shorts oder Hebel
+verwendet. Stop/Ziel werden vom Runner überwacht; ein Runner-Ausfall bedeutet daher
+keine garantierte Exit-Ausführung. Ein Always-on Background Worker ist für
+zuverlässige 24/7-Überwachung erforderlich; Render Free kann einschlafen.
+
+Wichtige Variablen: `CRYPTO_AUTOPILOT_SYMBOLS` (Standard `BTC/USD,ETH/USD,SOL/USD`),
+`CRYPTO_AUTOPILOT_SCAN_INTERVAL_SECONDS` (mindestens 60),
+`CRYPTO_AUTOPILOT_MAX_SYMBOLS` und `CRYPTO_AUTOPILOT_MIN_SHADOW_TRADES`.
+
 **Render-Hinweis:** Ein Render Free Web Service kann pausieren und ist daher
 nicht zuverlässig für periodische Scans oder 24/7-Betrieb. Nutzen Sie für reale
 regelmäßige Shadow-/Paper-Scans einen persistenten Worker plus externen Scheduler

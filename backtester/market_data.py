@@ -141,6 +141,15 @@ class CryptoMarketDataService:
     def latest_quote(self,symbol):
         from alpaca.data.requests import CryptoLatestQuoteRequest
         return self.client.get_crypto_latest_quote(CryptoLatestQuoteRequest(symbol_or_symbols=symbol))[symbol]
+    def latest_closed_bar(self, symbol):
+        """Return a real, completed crypto bar for shadow stop/target checks."""
+        from alpaca.data.requests import CryptoBarsRequest
+        from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
+        bars=self.client.get_crypto_bars(CryptoBarsRequest(symbol_or_symbols=symbol,timeframe=TimeFrame(15,TimeFrameUnit.Minute),start=datetime.now(timezone.utc)-timedelta(hours=2),limit=10)).df
+        if isinstance(bars.index,pd.MultiIndex): bars=bars.reset_index(level=0,drop=True)
+        bars=bars[pd.to_datetime(bars.index,utc=True)+pd.Timedelta(minutes=15)<=datetime.now(timezone.utc)]
+        if bars.empty: raise MarketDataError("Keine abgeschlossene Krypto-Kerze verfügbar.")
+        return bars.sort_index().iloc[-1]
     def snapshot(self,symbol):
         from alpaca.data.requests import CryptoBarsRequest
         from alpaca.data.timeframe import TimeFrame, TimeFrameUnit

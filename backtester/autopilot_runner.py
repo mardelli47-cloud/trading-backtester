@@ -26,7 +26,10 @@ class AutopilotRunner:
         self.symbols = tuple(dict.fromkeys(x.strip().upper() for x in raw.split(",") if x.strip()))[:self.max_symbols]
         self.plan_max_age = timedelta(minutes=max(1, int(plan_max_age_minutes or os.getenv("AUTOPILOT_PLAN_MAX_AGE_MINUTES", "60"))))
         self.running = False; self.task: asyncio.Task | None = None; self.last_scan: datetime | None = None
-        self.next_scan: datetime | None = None; self.last_error = ""; self.last_report = {"checked": [], "accepted": [], "rejected": {}}
+        self.next_scan: datetime | None = None; self.last_error = ""; self.last_report = self._report()
+
+    def _report(self) -> dict:
+        return {"checked": [], "accepted": [], "rejected": {}, "data_error": {}, "duplicate": {}, "already_open": {}, "outcomes": {}, "state_blocked": False, "state": self.autopilot.state.value, "message": ""}
 
     async def start(self) -> None:
         if self.running: return
@@ -77,23 +80,39 @@ class AutopilotRunner:
     def run_cycle(self) -> dict:
         self.monitor_open_plans()
         if self.autopilot.state not in {AutopilotState.SHADOW, AutopilotState.PAPER_ACTIVE}:
-            return self.last_report
+            report = self._report()
+            report.update(state_blocked=True, message="Autopilot ist nicht gestartet.", checked=list(self.symbols), outcomes={symbol: "state_blocked" for symbol in self.symbols})
+            self.last_report = report
+            return report
         if not self.symbols: raise ValueError("AUTOPILOT_SYMBOLS ist leer; kein unkontrollierter Vollmarkt-Scan.")
-        report = {"checked": [], "accepted": [], "rejected": {}}
+        report = self._report()
         snapshots = []
         for symbol in self.symbols:
             try: snapshots.append(self.build_snapshot(symbol)); report["checked"].append(symbol)
-            except Exception as exc: report["rejected"][symbol] = str(exc)
+            except Exception as exc: report["checked"].append(symbol); report["data_error"][symbol] = str(exc); report["outcomes"][symbol] = "data_error"
+        already_processed = {f"{snapshot.symbol}:{snapshot.timestamp.isoformat()}" for snapshot in snapshots if f"{snapshot.symbol}:{snapshot.timestamp.isoformat()}" in self.autopilot.processed_candles}
         plans = self.autopilot.scan(snapshots)
-        report["accepted"] = [p.symbol for p in plans]; self.process_plans(plans)
+        plans_by_symbol = {plan.symbol: plan for plan in plans}
+        for snapshot in snapshots:
+            symbol, plan = snapshot.symbol, plans_by_symbol.get(snapshot.symbol)
+            if plan is None:
+                category = "already_open" if symbol in self.autopilot.open_plans else ("duplicate" if f"{symbol}:{snapshot.timestamp.isoformat()}" in already_processed else "rejected")
+                report[category][symbol] = "bereits offene Position" if category == "already_open" else ("bereits verarbeitete Kerze" if category == "duplicate" else self.autopilot.last_signals.get(symbol, "kein bestätigtes Setup"))
+                report["outcomes"][symbol] = category
+            else:
+                self.process_plans([plan], report)
         self.last_scan = datetime.now(timezone.utc); self.next_scan = self.last_scan + timedelta(seconds=self.interval_seconds); self.last_report = report
         LOG.info("autopilot_cycle state=%s checked=%d rejected=%d plans=%d", self.autopilot.state.value, len(report["checked"]), len(report["rejected"]), len(plans))
         return report
 
-    def process_plans(self, plans: list[TradePlan]) -> None:
+    def process_plans(self, plans: list[TradePlan], report: dict | None = None) -> None:
         for plan in plans:
-            try: self.autopilot.execute(plan)
-            except Exception as exc: self.last_report.setdefault("rejected", {})[plan.symbol] = str(exc)
+            try:
+                self.autopilot.execute(plan)
+                if report is not None: report["accepted"].append(plan.symbol); report["outcomes"][plan.symbol] = "accepted"
+            except Exception as exc:
+                target = report if report is not None else self.last_report
+                target.setdefault("rejected", {})[plan.symbol] = str(exc); target.setdefault("outcomes", {})[plan.symbol] = "rejected"
 
     def monitor_open_plans(self, now: datetime | None = None) -> None:
         now = now or datetime.now(timezone.utc)
@@ -111,5 +130,5 @@ class AutopilotRunner:
         r = self.last_report
         return (f"Runner läuft: {'ja' if self.running else 'nein'}\nScanintervall: {self.interval_seconds}s\nSymbole: {', '.join(self.symbols) or 'leer'}\n"
                 f"Letzter Scan: {self.last_scan.isoformat() if self.last_scan else '–'}\nNächster Scan: {self.next_scan.isoformat() if self.next_scan else '–'}\n"
-                f"Geprüft: {', '.join(r['checked']) or '–'}\nAkzeptiert: {', '.join(r['accepted']) or '–'}\nAbgelehnt: {', '.join(f'{k}: {v}' for k,v in r['rejected'].items()) or '–'}\n"
-                f"Letzter Runnerfehler: {self.last_error or '–'}\nRender Free kann Scanzyklen im Schlaf unterbrechen.")
+                f"Zustand: {r['state']}\nGeprüft: {', '.join(r['checked']) or '–'}\nAkzeptiert: {', '.join(r['accepted']) or '–'}\nAbgelehnt: {', '.join(f'{k}: {v}' for k,v in r['rejected'].items()) or '–'}\n"
+                f"Letzter Runnerfehler: {self.last_error or '–'}\n" + ("⚠️ Kein persistenter DATABASE_URL-Store konfiguriert; Render-Neustarts können Zustände verlieren." if not os.getenv("DATABASE_URL") else "Persistenter DATABASE_URL-Store aktiv."))

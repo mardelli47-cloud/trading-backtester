@@ -62,8 +62,8 @@ class TradePlan:
 
 class Autopilot:
     """Persistent safety state and deterministic long-only decision gate."""
-    def __init__(self, service: PaperOrderService, path: str | Path = "autopilot_state.json", config: AutopilotConfig = AutopilotConfig()):
-        self.service, self.path, self.config = service, Path(path), config
+    def __init__(self, service: PaperOrderService, path: str | Path = "autopilot_state.json", config: AutopilotConfig = AutopilotConfig(), state_store=None):
+        self.service, self.path, self.config, self.state_store = service, Path(path), config, state_store
         self.state = AutopilotState.DISABLED
         self.processed_candles: set[str] = set(); self.open_plans: dict[str, TradePlan] = {}
         self.order_ids: dict[str, str] = {}; self.last_signals: dict[str, str] = {}
@@ -84,11 +84,13 @@ class Autopilot:
                    "open_plans": {k: {**asdict(v), "entry": str(v.entry), "stop": str(v.stop), "target": str(v.target), "qty": str(v.qty)} for k,v in self.open_plans.items()},
                    "order_ids": self.order_ids, "last_signals": self.last_signals,
                    "new_trades_today": self.new_trades_today, "shadow_closed": self.shadow_closed, "critical_errors": self.critical_errors, "shadow_results": self.shadow_results}
+        if self.state_store: self.state_store.set_state("autopilot", payload); return
         self.path.parent.mkdir(parents=True, exist_ok=True); self.path.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
 
     def load(self) -> None:
-        if not self.path.exists(): return
-        data = json.loads(self.path.read_text(encoding="utf-8")); self.state = AutopilotState(data.get("state", "DISABLED"))
+        data = self.state_store.get_state("autopilot") if self.state_store else (json.loads(self.path.read_text(encoding="utf-8")) if self.path.exists() else None)
+        if not data: return
+        self.state = AutopilotState(data.get("state", "DISABLED"))
         self.processed_candles = set(data.get("processed_candles", [])); self.order_ids = data.get("order_ids", {}); self.last_signals = data.get("last_signals", {})
         self.new_trades_today = data.get("new_trades_today", 0); self.shadow_closed = data.get("shadow_closed", 0); self.critical_errors = data.get("critical_errors", 0); self.shadow_results = data.get("shadow_results", [])
         self.open_plans = {symbol: TradePlan(symbol, item["strategy"], Decimal(item["entry"]), Decimal(item["stop"]), Decimal(item["target"]), Decimal(item["qty"]), item["candle_id"]) for symbol, item in data.get("open_plans", {}).items()}

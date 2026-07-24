@@ -40,9 +40,9 @@ class CryptoTradePlan:
     symbol: str; strategy: str; entry: Decimal; stop: Decimal; target: Decimal; qty: Decimal; candle_id: str; score: int
 
 class CryptoAutopilot:
-    def __init__(self, broker=None, path: str|Path="crypto_autopilot_state.json", config=CryptoAutopilotConfig()):
-        self.broker, self.path, self.config = broker, Path(path), config; self.state=CryptoState.DISABLED
-        self.assets={}; self.open_trades={}; self.closed=[]; self.processed=set(); self.new_trades_today=0; self.daily_pnl=Decimal("0"); self.last_signals={}; self._pending_shadow=False; self._pending_paper=False
+    def __init__(self, broker=None, path: str|Path="crypto_autopilot_state.json", config=CryptoAutopilotConfig(), state_store=None):
+        self.broker, self.path, self.config, self.state_store = broker, Path(path), config, state_store; self.state=CryptoState.DISABLED
+        self.assets={}; self.open_trades={}; self.closed=[]; self.processed=set(); self.new_trades_today=0; self.daily_pnl=Decimal("0"); self.last_signals={}; self.order_ids={}; self._pending_shadow=False; self._pending_paper=False
         self.load()
         if self.state is CryptoState.PAPER_ACTIVE: self.state=CryptoState.PAUSED; self.save()
     @staticmethod
@@ -52,10 +52,15 @@ class CryptoAutopilot:
         if "/" not in value: value += "/USD"
         return value
     def save(self):
-        self.path.write_text(json.dumps({"state":self.state.value,"closed":self.closed,"new_trades_today":self.new_trades_today,"daily_pnl":str(self.daily_pnl),"processed":list(self.processed)}, default=str), encoding="utf8")
+        payload={"state":self.state.value,"closed":self.closed,"new_trades_today":self.new_trades_today,"daily_pnl":str(self.daily_pnl),"processed":list(self.processed),"last_signals":self.last_signals,"order_ids":self.order_ids,
+                 "open_trades":{symbol:{**asdict(plan),"entry":str(plan.entry),"stop":str(plan.stop),"target":str(plan.target),"qty":str(plan.qty)} for symbol,plan in self.open_trades.items()}}
+        if self.state_store: self.state_store.set_state("crypto_autopilot", payload); return
+        self.path.parent.mkdir(parents=True, exist_ok=True); self.path.write_text(json.dumps(payload, default=str), encoding="utf8")
     def load(self):
-        if not self.path.exists(): return
-        d=json.loads(self.path.read_text(encoding="utf8")); self.state=CryptoState(d.get("state","DISABLED")); self.closed=d.get("closed",[]); self.new_trades_today=d.get("new_trades_today",0); self.daily_pnl=Decimal(d.get("daily_pnl","0")); self.processed=set(d.get("processed",[]))
+        d=self.state_store.get_state("crypto_autopilot") if self.state_store else (json.loads(self.path.read_text(encoding="utf8")) if self.path.exists() else None)
+        if not d: return
+        self.state=CryptoState(d.get("state","DISABLED")); self.closed=d.get("closed",[]); self.new_trades_today=d.get("new_trades_today",0); self.daily_pnl=Decimal(d.get("daily_pnl","0")); self.processed=set(d.get("processed",[])); self.last_signals=d.get("last_signals",{}); self.order_ids=d.get("order_ids",{})
+        self.open_trades={symbol:CryptoTradePlan(symbol,item["strategy"],Decimal(item["entry"]),Decimal(item["stop"]),Decimal(item["target"]),Decimal(item["qty"]),item["candle_id"],int(item["score"])) for symbol,item in d.get("open_trades",{}).items()}
     def set_assets(self, assets):
         def get(a, key, default=""):
             return a.get(key, default) if isinstance(a, dict) else getattr(a, key, default)
@@ -93,6 +98,17 @@ class CryptoAutopilot:
     def open_shadow(self,p):
         if p.candle_id in self.processed or p.symbol in self.open_trades: return False
         self.processed.add(p.candle_id); self.open_trades[p.symbol]=p; self.new_trades_today+=1; self.save(); return True
+    def execute_paper(self,p):
+        """Submit through the injected Alpaca *paper* broker, never in shadow."""
+        if self.state is not CryptoState.PAPER_ACTIVE: raise PermissionError("Krypto-Pilot ist nicht für Paper-Orders aktiviert.")
+        if p.symbol in self.open_trades: raise ValueError("bereits offene Position")
+        if p.candle_id in self.processed: raise ValueError("bereits verarbeitete Kerze")
+        if not self.broker: raise RuntimeError("Alpaca-Paper-Broker fehlt.")
+        from backtester.broker.base import OrderRequest
+        import hashlib
+        client_order_id = "crypto-auto-" + hashlib.sha256(p.candle_id.encode("utf-8")).hexdigest()[:24]
+        order=self.broker.submit_order(OrderRequest(p.symbol,"buy",p.qty,client_order_id=client_order_id))
+        self.processed.add(p.candle_id); self.open_trades[p.symbol]=p; self.order_ids[p.symbol]=order.id; self.new_trades_today+=1; self.save(); return order.id
     def close_shadow(self,symbol, price, reason, now=None):
         p=self.open_trades.pop(symbol,None)
         if not p: return False

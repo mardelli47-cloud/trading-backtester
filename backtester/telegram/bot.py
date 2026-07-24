@@ -168,6 +168,19 @@ class TelegramPaperController:
             return heading + f"Markt: {instrument.exchange} | {instrument.currency} | {instrument.timezone}\nDatenquelle: {daily.provider} | Datenzeitpunkt: {daily.timestamp.isoformat()} | {delay}\nKurs: {price:.4f} | Trend: {trend} | Momentum: {momentum:+.2f}%\nATR: {atr:.4f} | Unterstützung: {support:.4f} | Widerstand: {resistance:.4f}\nSetup-Score: {score}/100 (keine Gewinnwahrscheinlichkeit)\nTrigger: {resistance*1.001:.4f} | Stop: {support:.4f} | Ziel: {resistance+2*atr:.4f}\nDatenqualität: {quality}\n{subtype_note}{index_note}analysis_only=true | Paper-handelbar: nein\nNur Analyse – nicht über Alpaca Paper handelbar."
         except Exception as exc:
             return heading + f"Marktdaten konnten nicht geladen werden: {exc}\nEs werden keine Werte erfunden.\nNur Analyse – nicht über Alpaca Paper handelbar."
+    def _scan_message(self, title: str, report: dict, *, crypto: bool = False) -> str:
+        state = report.get("state", "unbekannt")
+        if report.get("state_blocked"):
+            notice = "Pilot ist deaktiviert. Starte ihn zweimal mit /cryptoauto start." if crypto and state == "DISABLED" else report.get("message", "Pilot ist nicht gestartet.")
+            details = ", ".join(f"{symbol}: state_blocked" for symbol in report.get("checked", ())) or "–"
+            return f"{title}\nZustand: {state}\n{notice}\nDetails: {details}"
+        details = []
+        for symbol in report.get("checked", ()):
+            outcome = report.get("outcomes", {}).get(symbol, "rejected")
+            reason = report.get(outcome, {}).get(symbol, "") if isinstance(report.get(outcome), dict) else ""
+            details.append(f"{symbol}: {outcome}" + (f" ({reason})" if reason else ""))
+        return f"{title}\nZustand: {state}\nGeprüft: {len(report.get('checked', []))}\nAkzeptiert: {len(report.get('accepted', []))}\nAbgelehnt: {len(report.get('rejected', {}))}\nDetails: " + ("; ".join(details) or "–")
+
     def command_message(self, command: str, args: tuple[str, ...] = (), user_id: int = 0) -> str:
         broker = self.service.broker
         if command == "cryptoauto":
@@ -177,7 +190,7 @@ class TelegramPaperController:
             if action in {"start","shadow"}: return c.start()
             if action == "scan":
                 if not self.crypto_runner: raise ValueError("Krypto-Runner fehlt.")
-                r=self.crypto_runner.run_cycle(); return f"₿ Krypto-Scan abgeschlossen\nGeprüft: {len(r['checked'])}\nSetups: {len(r['accepted'])}\nAbgelehnt: {len(r['rejected'])}"
+                r=self.crypto_runner.run_cycle(); return self._scan_message("₿ Krypto-Scan", r, crypto=True)
             if action == "paper": return c.activate_paper()
             if action == "pause": c.state=type(c.state).PAUSED
             elif action in {"stop","off"}: c.state=type(c.state).DISABLED
@@ -192,7 +205,7 @@ class TelegramPaperController:
             if action in {"start", "on"}: return self.autopilot.start()
             if action == "scan":
                 if not self.autopilot_runner: raise ValueError("Runner nicht konfiguriert.")
-                report = self.autopilot_runner.run_cycle(); return f"Scan: geprüft {len(report['checked'])}, akzeptiert {len(report['accepted'])}, abgelehnt {len(report['rejected'])}."
+                report = self.autopilot_runner.run_cycle(); return self._scan_message("Autopilot-Scan", report)
             if action == "last": return self.autopilot_runner.status() if self.autopilot_runner else "Kein Runner konfiguriert."
             if action == "shadow": return f"Shadow-Trades: offen {len(self.autopilot.open_plans)}, abgeschlossen {self.autopilot.shadow_closed}."
             if action == "paper": return self.autopilot.activate_paper()
@@ -298,7 +311,7 @@ def build_application(controller: TelegramPaperController, token: str):
             # this boundary defensive as well, so every caller can pass None
             # without turning a reply-keyboard action into a TypeError.
             text = controller.command_message(command, tuple(args or ()), user.id)
-            kind = {"watchlist":"watchlist", "autopilot":"autopilot", "account":"account", "scan":"scanner"}.get(command)
+            kind = {"watchlist":"watchlist", "autopilot":"autopilot", "cryptoauto":"cryptoautopilot", "account":"account", "scan":"scanner"}.get(command)
             await reply(message, text, reply_markup=keyboard(kind) if kind else None)
         except Exception as exc:
             incident_id = error_id()
@@ -349,6 +362,9 @@ def build_application(controller: TelegramPaperController, token: str):
             if action == "ap":
                 mapping = {"on":"start", "off":"stop", "pause":"pause", "resume":"resume", "status":"status", "scan":"scan", "last":"last", "shadow":"shadow", "paper":"paper", "kill":"kill"}
                 await query.edit_message_text(controller.command_message("autopilot", (mapping[value],), user_id), reply_markup=keyboard("autopilot")); return
+            if action == "ca":
+                mapping = {"start":"start", "off":"stop", "pause":"pause", "status":"status", "scan":"scan", "paper":"paper", "kill":"kill"}
+                await query.edit_message_text(controller.command_message("cryptoauto", (mapping[value],), user_id), reply_markup=keyboard("cryptoautopilot")); return
             if action == "cmd": await query.edit_message_text(controller.command_message(value, (), user_id), reply_markup=keyboard("account") if value == "account" else None); return
             if action in {"pl", "sc", "ob", "os"}: await query.edit_message_text("Diese Funktion benötigt aktuelle, abgeschlossene Marktdaten bzw. den geführten Paper-Order-Workflow und ist sicher nicht automatisch ausführbar."); return
             await query.edit_message_text("Dieser Button ist abgelaufen oder ungültig.")

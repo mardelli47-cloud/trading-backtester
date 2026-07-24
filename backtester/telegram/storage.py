@@ -35,6 +35,7 @@ class UserStore:
             cursor = self.connection.cursor() if self.kind == "postgres" else self.connection
             cursor.execute(f"CREATE TABLE IF NOT EXISTS telegram_watchlist (user_id {serial}, symbol TEXT, PRIMARY KEY (user_id, symbol))")
             cursor.execute(f"CREATE TABLE IF NOT EXISTS telegram_settings (user_id {serial} PRIMARY KEY, view_mode TEXT NOT NULL DEFAULT 'detailed', timezone TEXT NOT NULL DEFAULT 'Europe/Berlin')")
+            cursor.execute("CREATE TABLE IF NOT EXISTS application_state (state_key TEXT PRIMARY KEY, payload TEXT NOT NULL)")
         if self.kind == "postgres": self.connection.commit()
 
     def _execute(self, sql: str, params: tuple = ()):  # DB-API placeholder compatibility
@@ -64,4 +65,16 @@ class UserStore:
         if value not in {"compact", "detailed"}: raise ValueError("Ungültige Ansicht.")
         if self.kind == "sqlite": self._execute("INSERT INTO telegram_settings(user_id,view_mode) VALUES (?,?) ON CONFLICT(user_id) DO UPDATE SET view_mode=excluded.view_mode", (user_id, value))
         else: self._execute("INSERT INTO telegram_settings(user_id,view_mode) VALUES (?,?) ON CONFLICT(user_id) DO UPDATE SET view_mode=EXCLUDED.view_mode", (user_id, value))
+        self.connection.commit()
+
+    def get_state(self, key: str) -> dict | None:
+        row = self._execute("SELECT payload FROM application_state WHERE state_key=?", (key,)).fetchone()
+        return json.loads(row[0]) if row else None
+
+    def set_state(self, key: str, payload: dict) -> None:
+        encoded = json.dumps(payload, sort_keys=True)
+        if self.kind == "sqlite":
+            self._execute("INSERT INTO application_state(state_key,payload) VALUES (?,?) ON CONFLICT(state_key) DO UPDATE SET payload=excluded.payload", (key, encoded))
+        else:
+            self._execute("INSERT INTO application_state(state_key,payload) VALUES (?,?) ON CONFLICT(state_key) DO UPDATE SET payload=EXCLUDED.payload", (key, encoded))
         self.connection.commit()

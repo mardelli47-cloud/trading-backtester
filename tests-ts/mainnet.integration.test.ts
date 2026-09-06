@@ -1,0 +1,2 @@
+import { describe,expect,it } from "vitest";import { PublicKey } from "@solana/web3.js";import { getOnChainToken } from "@/lib/providers/solana/rpc";
+describe.skipIf(process.env.RUN_MAINNET_TESTS!=="1")("Mainnet",()=>{it("liest den Wrapped-SOL-Mint",async()=>{const result=await getOnChainToken(new PublicKey("So11111111111111111111111111111111111111112"));expect(BigInt(result.token.supply)).toBeGreaterThan(0n);expect(result.token.decimals).toBeGreaterThan(0)},20_000)});

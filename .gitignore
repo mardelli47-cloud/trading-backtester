@@ -11,3 +11,11 @@ outputs/
 # Telegram webhook / Paper-trading secrets
 .env.*
 !.env.example
+.next/
+node_modules/
+playwright-report/
+test-results/
+.env
+.env.local
+
+tsconfig.tsbuildinfo

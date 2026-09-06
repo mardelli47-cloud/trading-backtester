@@ -1,0 +1,2 @@
+"use client";import { useEffect,useState } from "react";
+export function ThemeButton(){const [mode,setMode]=useState("system");useEffect(()=>{const root=document.documentElement;root.classList.toggle("light",mode==="light"||(mode==="system"&&matchMedia("(prefers-color-scheme: light)").matches))},[mode]);return <button className="btn secondary" aria-label="Farbschema wechseln" onClick={()=>setMode(mode==="system"?"dark":mode==="dark"?"light":"system")}>{mode==="system"?"◐ System":mode==="dark"?"☾ Dunkel":"☀ Hell"}</button>}

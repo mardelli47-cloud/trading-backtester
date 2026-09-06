@@ -1,0 +1,3 @@
+import { test,expect } from "@playwright/test";
+test("Startseite und saubere Adressvalidierung",async({page})=>{await page.goto("/");await expect(page.getByRole("heading",{name:/Solana Token/})).toBeVisible();await page.getByLabel("Solana Mint-Adresse").fill("ungültig");await page.getByRole("button",{name:"Token analysieren"}).click();await expect(page.getByRole("alert")).toContainText("unterstützter Solana-Token")});
+test("Mobile Layout erzeugt keine Seiten-Überbreite",async({page},testInfo)=>{test.skip(testInfo.project.name!=="mobile");await page.goto("/");const sizes=await page.evaluate(()=>({scroll:document.documentElement.scrollWidth,client:document.documentElement.clientWidth}));expect(sizes.scroll).toBeLessThanOrEqual(sizes.client)});

@@ -1,0 +1,3 @@
+import { NextResponse } from "next/server"; import { analyzeToken } from "@/lib/analyze";
+export const runtime="nodejs";
+export async function GET(_:Request,{params}:{params:Promise<{mint:string}>}){const {mint}=await params;try{return NextResponse.json(await analyzeToken(mint),{headers:{"Cache-Control":"public, s-maxage=30, stale-while-revalidate=60"}})}catch(error){const code=error instanceof Error?error.message:"UNKNOWN";const invalid=code==="INVALID_MINT"||code==="UNSUPPORTED_MINT";return NextResponse.json({error:invalid?"Diese Adresse konnte nicht als unterstützter Solana-Token erkannt werden.":"Solana RPC ist vorübergehend nicht erreichbar. Bitte später erneut versuchen.",details:code},{status:invalid?400:502})}}
